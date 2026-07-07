@@ -1,0 +1,195 @@
+CAROTS:
+  CAUSALITY_THRESHOLD: 0.5
+  ENCODER_ARCH: lstm
+  LOSS_NAMES: &id001
+  - Loss
+  METRIC_NAMES: *id001
+  NEGATIVE_AUGMENTOR:
+    CUTOFF_PROBABILITY: 0.1
+    DISTURB_ALL: false
+    TRANSFORM_NAME: AddBias
+  POSITIVE_AUGMENTOR:
+    ENABLE: true
+    NOISE_LEVEL: 0.1
+  PROJECTOR:
+    HIDDEN_DIM: 1024
+    INPUT_DIM: 512
+    OUTPUT_DIM: 512
+  SIM_THRESHOLD: 0.5
+  SIM_THRESHOLD_END: 0.9
+  SIM_THRESHOLD_SCHEDULE: true
+  SIM_THRESHOLD_START: 0.5
+  TEMPERATURE: 0.1
+CAUSAL_DISCOVERER: CUTS_PLUS
+CUTS_PLUS:
+  CAUSAL_THRES: value_0.5
+  DATA_DIM: 1
+  DATA_PRED:
+    CONCAT_H: true
+    GRADIENT_CLIP: false
+    GRADIENT_CLIP_NORM: 1.0
+    GRU_LAYERS: 1
+    LR_DATA_END: 0.001
+    LR_DATA_START: 0.01
+    MLP_HID: 32
+    MODEL: multi_lstm
+    PRED_STEP: 1
+    PROB: true
+    SHARED_WEIGHTS_DECODER: false
+    WEIGHT_DECAY: 0
+  FILL_POLICY: None
+  GRAPH_DISCOV:
+    DYNAMIC_SAMPLING_MILESTONES:
+    - 0
+    DYNAMIC_SAMPLING_PERIODS:
+    - 1
+    END_TAU: 0.1
+    GRADIENT_CLIP: false
+    GRADIENT_CLIP_NORM: 1.0
+    LAMBDA_S_END: 0.01
+    LAMBDA_S_START: 0.1
+    LR_GRAPH_END: 0.0001
+    LR_GRAPH_START: 0.001
+    START_TAU: 1
+  GROUP_POLICY: multiply_2_every_20
+  INPUT_STEP: 1
+  N_GROUPS: 128
+  N_NODES: 128
+  RESULT_DIR: results/cuts_plus/
+  SHOW_GRAPH_EVERY: 10
+  SOLVER:
+    MAX_EPOCH: 50
+  SUPERVISION_POLICY: full
+  TRAIN:
+    BATCH_SIZE: 256
+    CHECKPOINT_DIR: results/cuts_plus/
+    EVAL_PERIOD: 1
+    METRIC_BEST: .inf
+DATA:
+  BASE_DIR: data/
+  DOWNSAMPLE_RATE: 1
+  NAME: Lorenz96_collective_global_factorNone
+  N_VAR: 128
+  SCALE: standard
+  TEST_STEP: 1
+  TRAIN_RATIO: 0.8
+  TRAIN_STEP: 1
+  WIN_SIZE: 2
+DATA_LOADER:
+  DROP_LAST: true
+  NUM_WORKERS: 4
+  PIN_MEMORY: true
+GATV2:
+  DROPOUT: 0.0
+  HEADS: 1
+  HIDDEN_CHANNELS: 32
+  IN_CHANNELS: 32
+  OUT_CHANNELS: 512
+GRU:
+  DROPOUT: 0.0
+  HIDDEN_DIM: 512
+  NUM_LAYERS: 1
+ITRANSFORMER:
+  ACTIVATION: gelu
+  C_OUT: 51
+  DROPOUT: 0.1
+  D_FF: 512
+  D_MODEL: 512
+  EMBED: timeF
+  ENC_IN: 51
+  E_LAYERS: 2
+  FACTOR: 3
+  FREQ: h
+  IGNORE_STAMP: true
+  N_HEADS: 8
+  OUTPUT_ATTENTION: false
+  c_out: 128
+  enc_in: 128
+LSTM:
+  DROPOUT: 0.0
+  HIDDEN_DIM: 512
+  NUM_LAYERS: 1
+MODEL:
+  NAME: CAROTS
+NUM_GPUS: 4
+RESULT_DIR: results/Lorenz96_collective_global_factorNone
+SCORER:
+  TYPE: l2
+SEED: 0
+SOLVER:
+  BASE_LR: 0.001
+  COSINE_AFTER_WARMUP: true
+  COSINE_END_LR: 0.0
+  DAMPENING: 0.0
+  GRADIENT_CLIP: true
+  GRADIENT_CLIP_NORM: 0.5
+  LR_POLICY: cosine
+  MAX_EPOCH: 30
+  MOMENTUM: 0.9
+  NESTEROV: true
+  OPTIMIZING_METHOD: adam
+  START_EPOCH: 0
+  WARMUP_EPOCHS: 5
+  WARMUP_START_LR: 0.0001
+  WEIGHT_DECAY: 0.001
+TEST:
+  ANOMALY_SCORES_DIR: ''
+  BATCH_SIZE: 256
+  DROP_LAST: false
+  ENABLE: true
+  POINT_ADJUST: true
+  SHUFFLE: false
+  SPLIT: test
+  THRESHOLD:
+    ANOMALY_RATIO: 0.5
+    TYPE: best_f1
+  VIS: true
+TIMESNET:
+  LOSS_NAMES: &id002
+  - Recon
+  METRIC_NAMES: *id002
+  anomaly_ratio: 1
+  c_out: 128
+  d_ff: 64
+  d_model: 512
+  dropout: 0.1
+  e_layers: 2
+  embed: timeF
+  enc_in: 128
+  freq: h
+  num_kernels: 6
+  pred_len: 0
+  top_k: 3
+TRAIN:
+  BATCH_SIZE: 256
+  CHECKPOINT_DIR: results/Lorenz96_collective_global_factorNone
+  DROP_LAST: true
+  ENABLE: true
+  EVAL_PERIOD: 5
+  IS_METRIC_LOWER_BETTER: true
+  METRIC_BEST: .inf
+  PRINT_FREQ: 100
+  RESUME: ''
+  SHUFFLE: true
+  SPLIT: train
+TRANSFORM:
+  AddBias:
+    bias_candidates:
+    - 0.5
+    - 0.4
+    - 0.3
+    - 0.2
+    - 0.1
+    - -0.1
+    - -0.2
+    - -0.3
+    - -0.4
+    - -0.5
+    percent: 0.5
+VAL:
+  BATCH_SIZE: 256
+  DROP_LAST: false
+  SHUFFLE: false
+  SPLIT: val
+  VIS: false
+VISIBLE_DEVICES: 0
