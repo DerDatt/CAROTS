@@ -11,7 +11,11 @@ from utils.misc import mkdir
 class CAROTSTrainer(Trainer):
     def __init__(self, cfg, model):
         super().__init__(cfg, model)
-        self.causal_discoverer_checkpoint_dir = str(mkdir(os.path.join(self.cfg.TRAIN.CHECKPOINT_DIR, self.cfg.CAUSAL_DISCOVERER.lower())))
+        # By default the causal discoverer is cached next to the CAROTS model.
+        # If CAUSAL_DISCOVERER_DIR is set, cache it there instead so runs that
+        # share the same training data can reuse a single trained discoverer.
+        causal_base = self.cfg.CAUSAL_DISCOVERER_DIR or self.cfg.TRAIN.CHECKPOINT_DIR
+        self.causal_discoverer_checkpoint_dir = str(mkdir(os.path.join(causal_base, self.cfg.CAUSAL_DISCOVERER.lower())))
         self.causal_discoverer_result_dir = self.causal_discoverer_checkpoint_dir
         cfg_causal_discoverer = getattr(self.cfg, f'{self.cfg.CAUSAL_DISCOVERER}')
         cfg_causal_discoverer.TRAIN.CHECKPOINT_DIR = self.causal_discoverer_checkpoint_dir

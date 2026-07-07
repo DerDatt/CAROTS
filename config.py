@@ -29,6 +29,10 @@ _C.DATA.TEST_STEP = 1
 _C.DATA.N_VAR = 51
 _C.DATA.TRAIN_RATIO = 0.8
 _C.DATA.DOWNSAMPLE_RATE = 1
+# Subdirectory under BASE_DIR that holds the VAR data files. Defaults to 'VAR'
+# (the upstream layout); set this to a variant folder such as 'VAR_nocausal' to
+# run the Step 1 robustness experiments without touching the data loader.
+_C.DATA.VAR_DIR = 'VAR'
 
 
 
@@ -72,6 +76,12 @@ _C.TEST.THRESHOLD = CN()
 _C.TEST.THRESHOLD.TYPE = 'best_f1'  # ratio, best_f1
 _C.TEST.THRESHOLD.ANOMALY_RATIO = 0.5
 _C.TEST.ANOMALY_SCORES_DIR = ""
+# Step 2 (variable-level localization). When True, the Predictor additionally
+# saves the per-variable causal-discoverer forecasting error for the test set
+# (per_variable_cd_error.npy) and the binarized causal graph
+# (causality_matrix.npy). This is inference-only and does not affect training,
+# the model or the loss; defaults to False to keep the upstream behavior intact.
+_C.TEST.SAVE_PER_VARIABLE = False
 
 
 
@@ -190,6 +200,14 @@ _C.TRANSFORM.AddBias.percent = 0.5
 
 
 _C.CAUSAL_DISCOVERER = 'CUTS_PLUS'
+
+# Optional shared directory for the causal discoverer checkpoint. When empty
+# (default), the causal discoverer is cached next to the CAROTS model under
+# TRAIN.CHECKPOINT_DIR (upstream behavior). When set, the causal discoverer is
+# cached here instead, so several runs that share the SAME training data (e.g.
+# the four anomaly types of one VAR scenario) can reuse a single trained causal
+# discoverer instead of retraining it every time.
+_C.CAUSAL_DISCOVERER_DIR = ''
 
 
 

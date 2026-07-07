@@ -324,7 +324,7 @@ class VARSegLoader(TSDataset):
         self.true_cm = np.load(os.path.join(self.data_dir, 'GC.npy'))
     
     def _load_data(self):
-        self.data_dir = os.path.join(self.cfg.DATA.BASE_DIR, 'VAR')
+        self.data_dir = os.path.join(self.cfg.DATA.BASE_DIR, self.cfg.DATA.VAR_DIR)
         train = np.load(os.path.join(self.data_dir, 'train.npy'))
         train_labels = np.zeros(train.shape[0])
         

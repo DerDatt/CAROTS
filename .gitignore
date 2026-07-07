@@ -1,2 +1,20 @@
 .vscode/
 **/__pycache__/
+
+# local environments
+.venv/
+venv/
+*.egg-info/
+
+# generated data variants (recreate with: python -m experiments.datagen --variant all)
+data/VAR_*/
+
+# experiment outputs (recreate by running the pipeline)
+results/
+results_*/
+experiments/generated/*.sh
+experiments/generated/commands.txt
+
+# checkpoints / large artifacts
+*.pth
+*.ckpt

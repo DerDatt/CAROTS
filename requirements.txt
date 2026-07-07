@@ -1,0 +1,35 @@
+# Python dependencies for CAROTS + the flawed-data / localization study.
+#
+# IMPORTANT: install PyTorch FIRST, matching your cluster's CUDA version.
+# Do NOT rely on the line below to pick the right CUDA build. Pick the exact
+# command for your CUDA from https://pytorch.org/get-started/locally/ , e.g.:
+#
+#     # CUDA 12.1 example:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# Then install the rest with:  pip install -r requirements.txt
+#
+# A CUDA-capable GPU is REQUIRED: the model hard-codes .cuda() calls, so
+# training will not run on CPU.
+
+# --- Core scientific stack ---
+numpy
+scipy
+scikit-learn
+pandas
+matplotlib
+tqdm
+
+# --- CAROTS framework ---
+yacs
+einops
+
+# --- Imported at module-load time (required even with the default LSTM encoder) ---
+# torch_geometric  -> models/carots/encoder.py (GATv2Conv) + datasets/collate.py
+# reformer_pytorch -> layers/SelfAttention_Family.py (LSHSelfAttention)
+torch-geometric
+reformer-pytorch
+
+# torch is intentionally NOT pinned here — install it separately (see note above)
+# so the wheel matches your cluster CUDA. torch_geometric will use that torch.
+torch
