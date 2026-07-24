@@ -344,19 +344,28 @@ def _inject_root_cause_and_save(
             raise RuntimeError(f"{method}: generator produced no anomalies")
         src = int(touched[0])
         if src != root_var:
-            # Move the corrupted series onto the root; restore the other channel.
-            out[root_var] = out[src]
+            # Move ONLY the perturbed timesteps onto the root, then restore src.
+            # Copying the whole series would make root differ from its origin at
+            # *every* t (different AR path) and paint varlabels solid black.
+            t_mask = changed[src]
+            out[root_var, t_mask] = out[src, t_mask]
             out[src] = gen.data_origin[src]
             # Timestep labels (lab) stay the same: same times are still anomalous.
 
         out_t = out.transpose()
         var_lab = (out != gen.data_origin).astype(int).transpose()
-        # Sanity: only root_var should be marked anomalous in varlabels.
+        # Sanity: only root_var should be marked, and only sparsely.
         other = var_lab.sum(axis=0)
         other[root_var] = 0
         if other.sum() > 0:
             raise RuntimeError(
                 f"{method}: varlabels mark non-root variables; aborting"
+            )
+        root_frac = float(var_lab[:, root_var].mean())
+        if root_frac > 0.25:
+            raise RuntimeError(
+                f"{method}: root varlabels cover {100 * root_frac:.1f}% of time "
+                f"(expected sparse injection ~{100 * ratio:.1f}%); aborting"
             )
 
         base = f"test_{method}_factor{factor}"
