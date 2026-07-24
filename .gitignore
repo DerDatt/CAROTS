@@ -6,6 +6,9 @@
 venv/
 *.egg-info/
 
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
 # generated data variants (recreate with: python -m experiments.datagen --variant all)
 data/VAR_*/
 
