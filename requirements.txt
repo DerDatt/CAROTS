@@ -19,6 +19,9 @@ scikit-learn
 pandas
 matplotlib
 tqdm
+# Optional but recommended for experiments/datagen.py --check-adf
+# (Augmented Dickey–Fuller unit-root test). Rolling mean/std checks work without it.
+statsmodels
 
 # --- CAROTS framework ---
 yacs
