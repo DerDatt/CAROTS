@@ -32,6 +32,9 @@ Distractors are independent AR(1). Ground-truth `GC.npy` uses the same
 convention as `localization.py`: `GC[i, j] == 1` means **i causes j**.
 
 Anomaly files use factor **3.0** by default (stronger than the paper's 2.0).
+`run_experiments.py` selects `TOY_ANOMALIES` automatically when
+`--scenarios toy_chain` is passed, so the generated commands look for
+`…_factor3.0.npy` (not `factor2.0`).
 
 ## Generate data
 

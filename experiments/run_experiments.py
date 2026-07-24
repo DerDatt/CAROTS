@@ -27,7 +27,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from experiments.scenarios import (  # noqa: E402
-    ANOMALIES, DEFAULT_SEEDS, SCENARIOS, STEP1_SCENARIOS, iter_runs,
+    ANOMALIES, DEFAULT_SEEDS, SCENARIOS, STEP1_SCENARIOS, TOY_ANOMALIES,
+    iter_runs,
 )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +74,9 @@ def main():
     all_commands = []
     master_lines = []
     for scenario in args.scenarios:
-        runs = iter_runs(scenarios=[scenario], anomalies=ANOMALIES,
+        # toy_chain data is generated with factor 3.0 by default; Step-1 VARs use 2.0.
+        anomaly_grid = TOY_ANOMALIES if scenario == "toy_chain" else ANOMALIES
+        runs = iter_runs(scenarios=[scenario], anomalies=anomaly_grid,
                          seeds=args.seeds, results_root=args.results_root)
         cmds = [r.to_command(python=args.python, save_per_variable=save_per_variable)
                 for r in runs]
