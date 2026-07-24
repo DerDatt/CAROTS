@@ -18,6 +18,11 @@ three *flawed training data* variants:
                    unsupervised assumption that training data is anomaly-free.
                    Its test set is identical to the baseline test set, so the
                    only thing that changes is the quality of the training data.
+  toy_chain      : small synthetic system for Step 2 localization demos.
+                   A short *linear causal chain* (0 → 1 → 2) plus a few
+                   independent distractor variables. Test anomalies are injected
+                   into the *root cause only* (variable 0), so localization has
+                   a clear correct answer. See ``experiments/TOY_CHAIN.md``.
 
 Every variant is written into its own directory using the SAME file layout that
 ``VARSegLoader`` expects, plus one extra file per test set:
@@ -42,9 +47,11 @@ Run examples (from the CAROTS repo root, with the project venv active):
   python -m experiments.datagen --variant nocausal      --out-dir data/VAR_nocausal
   python -m experiments.datagen --variant nonstationary --out-dir data/VAR_nonstationary --check-adf
   python -m experiments.datagen --variant contaminated  --out-dir data/VAR_contaminated
+  python -m experiments.datagen --variant toy_chain     --out-dir data/VAR_toy_chain
 
-  # or generate all four at once into data/VAR_<variant>/:
+  # or generate the four Step-1 variants at once into data/VAR_<variant>/:
   python -m experiments.datagen --variant all --check-adf
+  # (``all`` does NOT include toy_chain; generate that separately)
 
 ---------------------------------------------------------------------------
 CHANGELOG – nonstationary strengthening (A + C), 2026-07
@@ -119,6 +126,17 @@ ANOMALY_RADIUS = 5
 
 # Training-set contamination (the "contaminated" variant only).
 DEFAULT_CONTAMINATION_RATIO = 0.05  # ~5% of training timesteps become anomalous
+
+# Toy-chain defaults (Step 2 localization demo; intentionally small / easy).
+# Layout: variables 0..CHAIN_LEN-1 form 0→1→2→… ; the rest are independent AR(1)
+# distractors. Anomalies are injected into variable 0 only (the root cause).
+DEFAULT_TOY_CHAIN_LEN = 3
+DEFAULT_TOY_DISTRACTORS = 2          # total p = chain_len + distractors = 5
+DEFAULT_TOY_COUPLE = 0.85            # strength of the linear parent→child link
+DEFAULT_TOY_AUTO_CORR = 0.4
+DEFAULT_TOY_SD = 0.1
+DEFAULT_TOY_FACTORS = (3.0,)         # stronger than paper default 2.0
+DEFAULT_TOY_ROOT_VAR = 0             # only this variable is corrupted in the test set
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +225,152 @@ def simulate_nocausal(p, T, lag, beta_value, auto_corr, sd, seed):
                                auto_corr=auto_corr, rng=rng)
     data = _simulate_from_betas([beta], [T], p, lag, T, sd, rng)
     return data, GC
+
+
+def simulate_toy_chain(
+        T,
+        seed,
+        chain_len=DEFAULT_TOY_CHAIN_LEN,
+        n_distractors=DEFAULT_TOY_DISTRACTORS,
+        couple=DEFAULT_TOY_COUPLE,
+        auto_corr=DEFAULT_TOY_AUTO_CORR,
+        sd=DEFAULT_TOY_SD,
+        lag=1,
+):
+    """Simulate a tiny system with an explicit linear causal chain.
+
+    Purpose (Step 2 localization)
+    -----------------------------
+    The full VAR setup (p=128, ~10 anomalous variables) makes heatmaps hard to
+    read. This toy process is intentionally easy to reason about:
+
+    * Variables ``0 .. chain_len-1`` form a chain
+      ``0 → 1 → 2 → …`` with a strong linear coupling ``couple``:
+          X0_t = auto_corr * X0_{t-1} + eps
+          Xk_t = couple * X{k-1}_{t-1} + auto_corr * Xk_{t-1} + eps
+    * The remaining ``n_distractors`` variables are independent AR(1) series
+      (no link to the chain). They act as localization distractors.
+    * Ground-truth graph ``GC`` uses the same convention as localization.py:
+      ``GC[i, j] == 1`` means **i causes j**.
+
+    Returns
+    -------
+    data : (T, p) float array
+    GC   : (p, p) int array
+    """
+    if chain_len < 2:
+        raise ValueError("toy_chain needs chain_len >= 2 (at least one linear link)")
+    if lag != 1:
+        # Keep the demo simple: one lag is enough to show X_child ≈ couple * X_parent.
+        raise ValueError("toy_chain currently only supports lag=1")
+
+    rng = np.random.RandomState(seed)
+    p = chain_len + n_distractors
+    burn_in = 100
+    total = T + burn_in
+    X = np.zeros((p, total), dtype=np.float64)
+    X[:, 0] = rng.normal(scale=sd, size=p)
+
+    for t in range(1, total):
+        # Root of the chain: AR(1) only.
+        X[0, t] = auto_corr * X[0, t - 1] + rng.normal(scale=sd)
+        # Children: strong linear dependence on the previous parent value.
+        for k in range(1, chain_len):
+            X[k, t] = (
+                couple * X[k - 1, t - 1]
+                + auto_corr * X[k, t - 1]
+                + rng.normal(scale=sd)
+            )
+        # Distractors: independent AR(1), no cross-links.
+        for k in range(chain_len, p):
+            X[k, t] = auto_corr * X[k, t - 1] + rng.normal(scale=sd)
+
+    # GC[i, j] = 1  ⇒  i causes j  (matches experiments/localization.py).
+    GC = np.eye(p, dtype=int)
+    for k in range(chain_len - 1):
+        GC[k, k + 1] = 1
+
+    print(f"  toy_chain: p={p} (chain 0→…→{chain_len - 1}, "
+          f"{n_distractors} distractors), couple={couple}")
+    print(f"  ground-truth edges (i→j): "
+          + ", ".join(f"{k}→{k + 1}" for k in range(chain_len - 1)))
+    return X.T[burn_in:], GC
+
+
+def _inject_root_cause_and_save(
+        test,
+        out_dir,
+        factors,
+        seed,
+        root_var=DEFAULT_TOY_ROOT_VAR,
+        ratio=ANOMALY_RATIO,
+        radius=ANOMALY_RADIUS,
+):
+    """Inject anomalies into a *single* root-cause variable and save test files.
+
+    Unlike ``_inject_and_save`` (which corrupts ``ANOMALY_VAR_NUM`` random
+    channels), this helper always corrupts ``root_var`` only. That gives Step 2
+    a unique correct localization target: variable ``root_var``.
+
+    Downstream chain children are *not* overwritten; they only feel the anomaly
+    through the learned / true linear dynamics. Localization should therefore
+    rank the root highest (``direct`` may also light up children; ``causal``
+    is meant to push credit back upstream).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    # MultivariateDataGenerator expects (N, T).
+    n_vars, T = test.transpose().shape
+    if not (0 <= root_var < n_vars):
+        raise ValueError(f"root_var={root_var} out of range for p={n_vars}")
+
+    def _save_one(method, factor, radius_):
+        np.random.seed(seed)
+        gen = MultivariateDataGenerator(test.transpose())
+        func = getattr(gen, method)
+        # Force var_num=1, then overwrite the randomly chosen channel with root_var
+        # by re-running a minimal injection ourselves when needed.
+        # Simpler and explicit: call the generator with var_num=1 and then, if it
+        # picked the wrong channel, move the perturbation onto root_var.
+        if factor is None:
+            out, lab = func(var_num=1, ratio=ratio, radius=radius_)
+        else:
+            out, lab = func(var_num=1, ratio=ratio, factor=factor, radius=radius_)
+
+        # ``out`` is (N, T). Identify which channel the generator corrupted and
+        # relocate that corruption onto ``root_var`` so the GT is unambiguous.
+        changed = (out != gen.data_origin)
+        touched = np.where(changed.any(axis=1))[0]
+        if len(touched) == 0:
+            raise RuntimeError(f"{method}: generator produced no anomalies")
+        src = int(touched[0])
+        if src != root_var:
+            # Move the corrupted series onto the root; restore the other channel.
+            out[root_var] = out[src]
+            out[src] = gen.data_origin[src]
+            # Timestep labels (lab) stay the same: same times are still anomalous.
+
+        out_t = out.transpose()
+        var_lab = (out != gen.data_origin).astype(int).transpose()
+        # Sanity: only root_var should be marked anomalous in varlabels.
+        other = var_lab.sum(axis=0)
+        other[root_var] = 0
+        if other.sum() > 0:
+            raise RuntimeError(
+                f"{method}: varlabels mark non-root variables; aborting"
+            )
+
+        base = f"test_{method}_factor{factor}"
+        np.save(os.path.join(out_dir, base + ".npy"), out_t)
+        np.save(os.path.join(out_dir, base + "_labels.npy"), lab)
+        np.save(os.path.join(out_dir, base + "_varlabels.npy"), var_lab)
+        print(f"  saved {base}.npy  (root-cause var={root_var}, "
+              f"anomalous steps: {int(lab.sum())})")
+
+    for factor in factors:
+        _save_one("point_global_outliers", factor=factor, radius_=radius)
+        _save_one("point_contextual_outliers", factor=factor, radius_=radius)
+        _save_one("collective_trend_outliers", factor=factor, radius_=radius)
+    _save_one("collective_global_outliers", factor=None, radius_=radius)
 
 
 def simulate_nonstationary(
@@ -482,7 +646,11 @@ def generate_variant(variant, out_dir, factors, seed,
                      n_regimes=DEFAULT_N_REGIMES,
                      auto_corr_range=DEFAULT_AUTO_CORR_RANGE,
                      sd_range=DEFAULT_SD_RANGE,
-                     check_adf: bool = False):
+                     check_adf: bool = False,
+                     toy_chain_len=DEFAULT_TOY_CHAIN_LEN,
+                     toy_distractors=DEFAULT_TOY_DISTRACTORS,
+                     toy_couple=DEFAULT_TOY_COUPLE,
+                     toy_root_var=DEFAULT_TOY_ROOT_VAR):
     """Generate one dataset variant into ``out_dir``."""
     os.makedirs(out_dir, exist_ok=True)
     half = length // 2
@@ -525,6 +693,26 @@ def generate_variant(variant, out_dir, factors, seed,
         train, mask = _contaminate_train(train_clean, contamination_ratio, seed)
         np.save(os.path.join(out_dir, "train_contamination_mask.npy"), mask)
 
+    elif variant == "toy_chain":
+        # Ignore --p for this variant: width is chain_len + distractors.
+        data, GC = simulate_toy_chain(
+            T=length, seed=seed,
+            chain_len=toy_chain_len,
+            n_distractors=toy_distractors,
+            couple=toy_couple,
+        )
+        train, test = data[:half], data[half:]
+        meta = dict(
+            chain_len=toy_chain_len,
+            n_distractors=toy_distractors,
+            couple=toy_couple,
+            root_var=toy_root_var,
+            auto_corr=DEFAULT_TOY_AUTO_CORR,
+            sd=DEFAULT_TOY_SD,
+        )
+        np.savez(os.path.join(out_dir, "toy_meta.npz"), **meta)
+        print(f"  wrote toy_meta.npz ({meta})")
+
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
@@ -532,7 +720,13 @@ def generate_variant(variant, out_dir, factors, seed,
     np.save(os.path.join(out_dir, "GC.npy"), GC)
     print(f"  train shape {train.shape}, test shape {test.shape}")
 
-    _inject_and_save(test, out_dir, factors=factors, seed=seed)
+    if variant == "toy_chain":
+        # Root-cause-only injection + stronger default factors for a clear demo.
+        toy_factors = factors if factors != [2.0] else list(DEFAULT_TOY_FACTORS)
+        _inject_root_cause_and_save(
+            test, out_dir, factors=toy_factors, seed=seed, root_var=toy_root_var)
+    else:
+        _inject_and_save(test, out_dir, factors=factors, seed=seed)
     print(f"[{variant}] done.\n")
 
 
@@ -541,17 +735,18 @@ def _parse_args():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--variant", required=True,
                         choices=["baseline", "nocausal", "nonstationary",
-                                 "contaminated", "all"],
-                        help="which dataset variant to generate")
+                                 "contaminated", "toy_chain", "all"],
+                        help="which dataset variant to generate "
+                             "(``all`` = the four Step-1 variants, not toy_chain)")
     parser.add_argument("--out-dir", default=None,
                         help="output directory (default: data/VAR_<variant>)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--factors", type=float, nargs="+", default=[2.0],
                         help="anomaly difficulty factors for the test set "
-                             "(default: 2.0, the paper default)")
+                             "(default: 2.0; toy_chain defaults to 3.0 if left at 2.0)")
     parser.add_argument("--length", type=int, default=DEFAULT_LENGTH)
     parser.add_argument("--p", type=int, default=DEFAULT_P,
-                        help="number of variables")
+                        help="number of variables (ignored for toy_chain)")
     parser.add_argument("--contamination-ratio", type=float,
                         default=DEFAULT_CONTAMINATION_RATIO)
     parser.add_argument("--n-regimes", type=int, default=DEFAULT_N_REGIMES,
@@ -568,6 +763,18 @@ def _parse_args():
     parser.add_argument("--check-adf", action="store_true",
                         help="for nonstationary: write stationarity_check.txt "
                              "(rolling stats + ADF vs same-seed baseline)")
+    parser.add_argument("--toy-chain-len", type=int, default=DEFAULT_TOY_CHAIN_LEN,
+                        help="toy_chain: number of variables in the linear chain "
+                             f"(default {DEFAULT_TOY_CHAIN_LEN})")
+    parser.add_argument("--toy-distractors", type=int, default=DEFAULT_TOY_DISTRACTORS,
+                        help="toy_chain: independent AR(1) distractor count "
+                             f"(default {DEFAULT_TOY_DISTRACTORS})")
+    parser.add_argument("--toy-couple", type=float, default=DEFAULT_TOY_COUPLE,
+                        help="toy_chain: linear parent→child coefficient "
+                             f"(default {DEFAULT_TOY_COUPLE})")
+    parser.add_argument("--toy-root-var", type=int, default=DEFAULT_TOY_ROOT_VAR,
+                        help="toy_chain: which variable receives test anomalies "
+                             f"(default {DEFAULT_TOY_ROOT_VAR} = chain root)")
     return parser.parse_args()
 
 
@@ -595,6 +802,10 @@ def main():
             auto_corr_range=tuple(args.auto_corr_range),
             sd_range=tuple(args.sd_range),
             check_adf=args.check_adf,
+            toy_chain_len=args.toy_chain_len,
+            toy_distractors=args.toy_distractors,
+            toy_couple=args.toy_couple,
+            toy_root_var=args.toy_root_var,
         )
 
 

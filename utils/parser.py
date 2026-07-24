@@ -67,11 +67,19 @@ def load_config(args):
         cfg.DATA.WIN_SIZE = 2
         cfg.CUTS_PLUS.INPUT_STEP = 1
     elif "VAR" in cfg.DATA.NAME:
-        cfg.DATA.N_VAR = valid_datasets["VAR"]
+        # Window / scorer settings match the upstream VAR scripts.
         cfg.DATA.WIN_SIZE = 4
         cfg.CUTS_PLUS.INPUT_STEP = 3
         cfg.SCORER.TYPE = "cos"
         cfg.TRANSFORM.AddBias.bias_candidates = (1.5, 1.0, 0.5, -0.5, -1.0, -1.5)
+        # Infer width from the on-disk train split so toy_chain (p=5) and the
+        # paper VAR (p=128) both work without a hard-coded N_VAR override.
+        train_path = os.path.join(cfg.DATA.BASE_DIR, cfg.DATA.VAR_DIR, "train.npy")
+        if os.path.isfile(train_path):
+            import numpy as np
+            cfg.DATA.N_VAR = int(np.load(train_path, mmap_mode="r").shape[-1])
+        else:
+            cfg.DATA.N_VAR = valid_datasets["VAR"]
     else:
         cfg.DATA.N_VAR = valid_datasets[cfg.DATA.NAME]
 

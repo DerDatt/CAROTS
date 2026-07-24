@@ -13,6 +13,11 @@ Scenarios (Step 1)
 - ``nonstationary`` : the causal relationships drift over time (regime switches).
 - ``contaminated``  : the *training* data already contains anomalies.
 
+Step 2 helper scenario
+----------------------
+- ``toy_chain``     : small linear causal chain for localization demos
+  (not included in the default Step-1 grid). See ``experiments/TOY_CHAIN.md``.
+
 Each scenario reads its data from ``data/VAR_<scenario>/`` (produced by
 ``experiments/datagen.py``) via the ``DATA.VAR_DIR`` config hook, and writes its
 outputs to a scenario-specific ``RESULT_DIR`` so nothing collides.
@@ -26,12 +31,16 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 # Grid definition
 # ---------------------------------------------------------------------------
-# The four flawed-data scenarios, mapped to their data folders under data/.
+# Step-1 flawed-data scenarios (default for ``iter_runs`` / ``run_all``).
+STEP1_SCENARIOS = ("baseline", "nocausal", "nonstationary", "contaminated")
+
+# All known scenario → data-folder mappings (includes the Step-2 toy).
 SCENARIOS = {
     "baseline": "VAR_baseline",
     "nocausal": "VAR_nocausal",
     "nonstationary": "VAR_nonstationary",
     "contaminated": "VAR_contaminated",
+    "toy_chain": "VAR_toy_chain",
 }
 
 
@@ -52,6 +61,14 @@ ANOMALIES = [
     AnomalySpec("point_global", "2.0"),
     AnomalySpec("point_contextual", "2.0"),
     AnomalySpec("collective_trend", "2.0"),
+    AnomalySpec("collective_global", "None"),
+]
+
+# Toy-chain uses a stronger factor; datagen writes factor-3.0 files by default.
+TOY_ANOMALIES = [
+    AnomalySpec("point_global", "3.0"),
+    AnomalySpec("point_contextual", "3.0"),
+    AnomalySpec("collective_trend", "3.0"),
     AnomalySpec("collective_global", "None"),
 ]
 
@@ -130,12 +147,22 @@ def iter_runs(scenarios: Optional[List[str]] = None,
               seeds: Optional[List[int]] = None,
               results_root: str = "results",
               base_dir: str = "data/") -> List[RunSpec]:
-    """Enumerate every (scenario, anomaly, seed) run in the requested grid."""
-    scenarios = scenarios or list(SCENARIOS.keys())
-    anomalies = anomalies or ANOMALIES
+    """Enumerate every (scenario, anomaly, seed) run in the requested grid.
+
+    Defaults to the four Step-1 scenarios (``toy_chain`` is opt-in via
+    ``scenarios=["toy_chain"]``). When only ``toy_chain`` is requested and no
+    anomaly list is passed, ``TOY_ANOMALIES`` (factor 3.0) is used.
+    """
+    scenarios = scenarios or list(STEP1_SCENARIOS)
+    if anomalies is None:
+        anomalies = TOY_ANOMALIES if set(scenarios) == {"toy_chain"} else ANOMALIES
     seeds = seeds or DEFAULT_SEEDS
     runs = []
     for scenario in scenarios:
+        if scenario not in SCENARIOS:
+            raise KeyError(
+                f"Unknown scenario {scenario!r}; expected one of {list(SCENARIOS)}"
+            )
         for anomaly in anomalies:
             for seed in seeds:
                 runs.append(RunSpec(

@@ -27,7 +27,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from experiments.scenarios import (  # noqa: E402
-    ANOMALIES, DEFAULT_SEEDS, SCENARIOS, iter_runs,
+    ANOMALIES, DEFAULT_SEEDS, SCENARIOS, STEP1_SCENARIOS, iter_runs,
 )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,9 +50,11 @@ def _write_script(path, lines):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Step 1 run scripts.")
-    parser.add_argument("--scenarios", nargs="*", default=list(SCENARIOS.keys()),
+    parser.add_argument("--scenarios", nargs="*", default=list(STEP1_SCENARIOS),
                         choices=list(SCENARIOS.keys()),
-                        help="Subset of scenarios to generate.")
+                        help="Subset of scenarios to generate "
+                             "(default: Step-1 four; pass toy_chain for the "
+                             "localization demo).")
     parser.add_argument("--seeds", nargs="*", type=int, default=DEFAULT_SEEDS,
                         help="Random seeds to run for each cell.")
     parser.add_argument("--results-root", default="results",
