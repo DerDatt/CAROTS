@@ -99,6 +99,18 @@ DEFAULT_WEIGHT_DECAY = 0.0
 DEFAULT_SEEDS = [2]
 
 
+def _join(*parts: str) -> str:
+    """Join path components with forward slashes, on every platform.
+
+    The run scripts are typically generated on a laptop and executed on a Linux
+    GPU box. ``os.path.join`` on Windows would emit backslashes, which the remote
+    shell then treats as escape characters instead of separators - the run
+    silently writes to a single directory named ``results/xnocausalxseed8``.
+    Forward slashes are accepted by both platforms, so we always use them.
+    """
+    return "/".join(p.rstrip("/\\") for p in parts if p)
+
+
 @dataclass
 class RunSpec:
     """A fully-resolved experiment: one (scenario, anomaly, seed) combination."""
@@ -118,7 +130,7 @@ class RunSpec:
     @property
     def result_dir(self) -> str:
         """Scenario/seed-specific output root (DATA.NAME is appended by main.py)."""
-        return os.path.join(self.results_root, self.scenario, f"seed{self.seed}")
+        return _join(self.results_root, self.scenario, f"seed{self.seed}")
 
     @property
     def causal_dir(self) -> str:
@@ -128,18 +140,18 @@ class RunSpec:
         types of a scenario reuse a single trained causal discoverer (they share
         the same train.npy). main.py does not append DATA.NAME to this key.
         """
-        return os.path.join(self.results_root, self.scenario, f"seed{self.seed}",
-                            "shared_causal")
+        return _join(self.results_root, self.scenario, f"seed{self.seed}",
+                     "shared_causal")
 
     @property
     def data_dir(self) -> str:
         """Folder holding this scenario's *_varlabels.npy (for localization)."""
-        return os.path.join(self.base_dir, self.var_dir)
+        return _join(self.base_dir, self.var_dir)
 
     @property
     def final_result_dir(self) -> str:
         """Where main.py actually writes outputs after appending DATA.NAME."""
-        return os.path.join(self.result_dir, self.anomaly.dataset_name)
+        return _join(self.result_dir, self.anomaly.dataset_name)
 
     def to_opts(self, save_per_variable: bool = True) -> List[str]:
         """Build the yacs override list passed to ``main.py``."""

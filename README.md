@@ -82,9 +82,17 @@ high-value work first and aggregates after every stage, so an interrupted run
 still leaves a consistent set of results:
 
 ```bash
-bash experiments/run_overnight.sh          # toys, then seeds 3 and 4
-SKIP_SEEDS=1 bash experiments/run_overnight.sh   # only the toy controls (minutes)
+bash experiments/run_overnight.sh              # all four stages, in priority order
+ONLY=toys bash experiments/run_overnight.sh    # just the Step-2 controls (minutes)
+ONLY=step1 bash experiments/run_overnight.sh   # just the extra Step-1 seeds
 ```
+
+The stages are ordered by value per GPU-hour: the toy controls that Step 2 is
+missing entirely come first, then seeds for the two Step-1 scenarios that are
+short on them, and the low-value backfill last. Because every run script is
+generated with `--skip-existing`, restarting the driver never retrains a cell
+that already has a `test.txt` — it is safe to just launch it again after a crash,
+and `--keep-going` means one failed cell does not abort the rest.
 
 Progress, per-step timings and failures are logged to
 `results/overnight_log.txt`. Before spending GPU time, you can verify the whole
@@ -143,7 +151,7 @@ experiments/
   scenarios.py             # single source of truth for the experiment grid
   run_experiments.py       # generate (and optionally --execute) the run scripts
   run_pipeline.sh          # one-shot: datagen -> run all -> aggregate
-  run_overnight.sh         # toy controls first, then extra seeds, resumable
+  run_overnight.sh         # unattended driver: priority-ordered, resumable
   aggregate.py             # parse results -> CSVs + comparison plots + Step 2
   localization.py          # Step 2: attribution, metrics, figures (offline, CPU)
   test_localization.py     # GPU-free smoke test of the offline analysis

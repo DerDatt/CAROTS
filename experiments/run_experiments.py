@@ -35,15 +35,27 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _GEN_DIR = os.path.join(_HERE, "generated")
 
 
-def _write_script(path, lines):
-    """Write an executable shell script with a header and the given lines."""
+def _write_script(path, lines, keep_going=False):
+    """Write an executable shell script with a header and the given lines.
+
+    With ``keep_going`` the script drops ``set -e`` and instead reports how many
+    commands failed. This matters for unattended runs: a single cell that dies
+    (an OOM, a bad seed) must not throw away the rest of the night.
+    """
     with open(path, "w") as f:
         f.write("#!/usr/bin/env bash\n")
-        f.write("set -euo pipefail\n")
+        f.write("set -uo pipefail\n" if keep_going else "set -euo pipefail\n")
         # Run from the repository root so relative data/ and results/ paths work.
         f.write('cd "$(dirname "$0")/../.."\n\n')
+        if keep_going:
+            f.write("_failed=0\n")
+            f.write("_run() { \"$@\" || { _failed=$((_failed+1)); "
+                    "echo \"FAILED: $*\" >&2; }; }\n\n")
         for line in lines:
             f.write(line + "\n")
+        if keep_going:
+            f.write('\necho "$(basename "$0"): $_failed command(s) failed"\n')
+            f.write("exit 0\n")
     # chmod +x
     st = os.stat(path)
     os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -66,6 +78,14 @@ def main():
                         help="Disable saving the Step 2 per-variable localization artifacts.")
     parser.add_argument("--execute", action="store_true",
                         help="Also execute the commands now (requires a GPU).")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="Generated scripts continue after a failing run "
+                             "and report the failure count at the end. Use this "
+                             "for unattended overnight runs.")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Omit runs whose results already contain test.txt. "
+                             "Lets you fill gaps without retraining finished "
+                             "cells.")
     args = parser.parse_args()
 
     os.makedirs(_GEN_DIR, exist_ok=True)
@@ -78,16 +98,27 @@ def main():
         anomaly_grid = TOY_ANOMALIES if scenario in TOY_SCENARIOS else ANOMALIES
         runs = iter_runs(scenarios=[scenario], anomalies=anomaly_grid,
                          seeds=args.seeds, results_root=args.results_root)
+        if args.skip_existing:
+            keep = [r for r in runs
+                    if not os.path.exists(os.path.join(r.final_result_dir,
+                                                       "test.txt"))]
+            if len(keep) != len(runs):
+                print(f"  {scenario}: skipping {len(runs) - len(keep)} finished "
+                      f"run(s)")
+            runs = keep
         cmds = [r.to_command(python=args.python, save_per_variable=save_per_variable)
                 for r in runs]
         all_commands.extend(cmds)
 
         script_path = os.path.join(_GEN_DIR, f"run_{scenario}.sh")
-        _write_script(script_path, [f'echo "=== {scenario} ==="'] + cmds)
+        body = [f'_run {c}' for c in cmds] if args.keep_going else list(cmds)
+        _write_script(script_path, [f'echo "=== {scenario} ==="'] + body,
+                      keep_going=args.keep_going)
         master_lines.append(f'bash "$(dirname "$0")/run_{scenario}.sh"')
         print(f"wrote {script_path} ({len(cmds)} runs)")
 
-    _write_script(os.path.join(_GEN_DIR, "run_all.sh"), master_lines)
+    _write_script(os.path.join(_GEN_DIR, "run_all.sh"), master_lines,
+                  keep_going=args.keep_going)
     with open(os.path.join(_GEN_DIR, "commands.txt"), "w") as f:
         f.write("\n".join(all_commands) + "\n")
     print(f"wrote {os.path.join(_GEN_DIR, 'run_all.sh')} and commands.txt "

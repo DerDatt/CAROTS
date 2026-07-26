@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# Overnight run: finish the Step 2 localization story, then add seeds to Step 1.
+# Overnight run: close the gaps that the existing cluster results still have.
 #
-# Why a separate script from run_pipeline.sh
-# ------------------------------------------
-# run_pipeline.sh runs the Step-1 grid once, on one seed. That is enough for a
-# first look but leaves two gaps that a reviewer will immediately probe:
+# What is already done (as of the results reviewed on 2026-07-27)
+# --------------------------------------------------------------
+#   baseline       22 seeds   nonstationary   5 seeds
+#   nocausal       22 seeds   contaminated    5 seeds
+#   toy_chain       1 seed    toy_chain_mid / _leaf   none at all
 #
-#   * Step 1 has no error bars, so a scenario difference cannot be told apart
-#     from seed-to-seed noise.
-#   * Step 2 was only ever run with the anomaly on the chain *root*, so
-#     "the attribution always answers variable 0" is not ruled out and the
-#     causal-propagation term is never actually put to the test.
+# So Step 1 already has solid error bars for two scenarios, and retraining those
+# seeds would burn the night for nothing. What is genuinely missing is, in order
+# of value per GPU-hour:
 #
-# This script closes both gaps, ordered by value per GPU-hour, and it keeps
-# going if a single run fails. Every stage aggregates immediately afterwards, so
-# whatever has finished by morning is already usable - even if the machine dies
-# halfway through.
+# Stage 1 (minutes) : toy_chain_mid + toy_chain_leaf, anomaly on the chain
+#                     middle and leaf instead of the root. Without these,
+#                     "the attribution just always answers variable 0" cannot be
+#                     ruled out - the single most attackable point in Step 2.
+# Stage 2 (minutes) : extra seeds for all three toys, so the Step-2 metrics get
+#                     error bars too. Still cheap because p=5.
+# Stage 3 (hours)   : extra seeds for nonstationary + contaminated, the two
+#                     underpowered Step-1 scenarios (5 seeds vs 22).
+# Stage 4 (hours)   : fill the 14 missing nocausal cells (mostly
+#                     collective_global for seeds 8-20). Lowest value: that cell
+#                     already has 9 seeds and a std of 0.001.
 #
-# Stage 1 (minutes)  : the three toy variants (p=5, so the causal discoverer is
-#                      cheap). Anomalies on the chain root / middle / leaf.
-# Stage 2 (hours)    : one extra seed for the whole Step-1 grid -> mean +/- std.
-# Stage 3 (hours)    : a second extra seed, if the night is long enough.
+# Every stage aggregates immediately afterwards and nothing uses `set -e`, so
+# whatever has finished by morning is usable even if the machine dies midway.
 #
 # Usage (from the CAROTS/ directory):
 #   bash experiments/run_overnight.sh
@@ -28,22 +32,26 @@
 # Environment overrides:
 #   PYTHON=python3.10  bash experiments/run_overnight.sh   # pick the interpreter
 #   GPU=1              bash experiments/run_overnight.sh   # use CUDA device 1
-#   SEEDS="3 4"        bash experiments/run_overnight.sh   # extra Step-1 seeds
-#   SKIP_TOYS=1        bash experiments/run_overnight.sh   # only do the seeds
-#   SKIP_SEEDS=1       bash experiments/run_overnight.sh   # only do the toys
-#
-# Deliberately no `set -e`: one crashed run must not throw away the night.
+#   TOY_SEEDS="2 3 4"  bash experiments/run_overnight.sh   # seeds for the toys
+#   STEP1_SEEDS="4 5"  bash experiments/run_overnight.sh   # extra Step-1 seeds
+#   ONLY=toys          bash experiments/run_overnight.sh   # stages 1-2 only
+#   ONLY=step1         bash experiments/run_overnight.sh   # stages 3-4 only
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
 PYTHON="${PYTHON:-python}"
 GPU="${GPU:-0}"
-SEEDS="${SEEDS:-3 4}"
 BASE_SEED="${BASE_SEED:-2}"
-SKIP_TOYS="${SKIP_TOYS:-0}"
-SKIP_SEEDS="${SKIP_SEEDS:-0}"
+TOY_SEEDS="${TOY_SEEDS:-3 4}"
+STEP1_SEEDS="${STEP1_SEEDS:-4 5 6 7}"
+ONLY="${ONLY:-all}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$GPU}"
+
+TOYS="toy_chain toy_chain_mid toy_chain_leaf"
+# nonstationary/contaminated are the ones short on seeds; nocausal only needs
+# its missing cells backfilled, which --skip-existing handles on its own.
+UNDERPOWERED="nonstationary contaminated"
 
 mkdir -p results
 LOG="results/overnight_log.txt"
@@ -84,66 +92,85 @@ step() {
 
 log "=============================================="
 log " CAROTS overnight run - started $(date '+%F %T')"
-log "   python     : $PYTHON"
-log "   GPU        : CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
-log "   extra seeds: $SEEDS"
-log "   full log   : $LOG"
+log "   python      : $PYTHON"
+log "   GPU         : CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+log "   toy seeds   : $BASE_SEED $TOY_SEEDS"
+log "   step-1 seeds: $STEP1_SEEDS"
+log "   stages      : $ONLY"
+log "   full log    : $LOG"
 log "=============================================="
 
-# --------------------------------------------------------------------------
-# Stage 1 - Step 2 controls on the toy chain (cheap: p=5)
-# --------------------------------------------------------------------------
-if [ "$SKIP_TOYS" != "1" ]; then
-  log ""
-  log ">>> STAGE 1/3: toy-chain localization controls"
+# Generate scripts and run them for one (scenario list, seed list) block.
+# --skip-existing means a rerun of this script never retrains a finished cell,
+# so it is safe to just start it again after a crash.
+run_block() {
+  local label="$1" scenarios="$2" seeds="$3"
+  step "generate run scripts: $label" \
+    "$PYTHON" -m experiments.run_experiments \
+      --scenarios $scenarios --seeds $seeds --keep-going --skip-existing
+  for scenario in $scenarios; do
+    step "train+eval: $scenario ($label)" \
+      bash "experiments/generated/run_${scenario}.sh"
+  done
+}
 
-  for variant in toy_chain toy_chain_mid toy_chain_leaf; do
+# --------------------------------------------------------------------------
+# Stage 1 - the controls that Step 2 is missing entirely (cheap: p=5)
+# --------------------------------------------------------------------------
+if [ "$ONLY" != "step1" ]; then
+  log ""
+  log ">>> STAGE 1/4: toy controls - anomaly on chain middle and leaf"
+
+  for variant in $TOYS; do
     ensure_data "$variant"
   done
 
-  step "generate toy run scripts" \
-    "$PYTHON" -m experiments.run_experiments \
-      --scenarios toy_chain toy_chain_mid toy_chain_leaf --seeds "$BASE_SEED"
+  run_block "seed $BASE_SEED" "toy_chain_mid toy_chain_leaf" "$BASE_SEED"
 
-  for scenario in toy_chain toy_chain_mid toy_chain_leaf; do
-    step "train+eval: $scenario (seed $BASE_SEED)" \
-      bash "experiments/generated/run_${scenario}.sh"
-  done
+  # Aggregate now: this is the part of the talk that must exist by morning.
+  step "aggregate after stage 1" \
+    "$PYTHON" -m experiments.aggregate --localization-scenarios $TOYS
+  log ">>> STAGE 1 done - the 'always variable 0' objection is now answerable"
 
-  # Aggregate now: the Step 2 numbers are the part of the talk that must exist.
-  step "aggregate after stage 1" "$PYTHON" -m experiments.aggregate
-  log ">>> STAGE 1 done - results/localization_metrics.csv is populated"
+  # ------------------------------------------------------------------------
+  # Stage 2 - error bars on the Step-2 metrics, still only minutes
+  # ------------------------------------------------------------------------
+  log ""
+  log ">>> STAGE 2/4: extra seeds for all three toys ($TOY_SEEDS)"
+  run_block "seeds $TOY_SEEDS" "$TOYS" "$TOY_SEEDS"
+  step "aggregate after stage 2" \
+    "$PYTHON" -m experiments.aggregate --localization-scenarios $TOYS
+  log ">>> STAGE 2 done - Step 2 now has seed variability"
 fi
 
 # --------------------------------------------------------------------------
-# Stages 2+ - extra seeds for the Step-1 grid, one complete seed at a time
+# Stage 3 - lift the two underpowered Step-1 scenarios from 5 seeds
 # --------------------------------------------------------------------------
-if [ "$SKIP_SEEDS" != "1" ]; then
-  stage=2
-  for seed in $SEEDS; do
-    log ""
-    log ">>> STAGE $stage: Step-1 grid, seed $seed"
-
-    # Only fills in what a fresh Colab session is missing; existing data is left
-    # exactly as the earlier seeds saw it.
-    for variant in baseline nocausal nonstationary contaminated; do
-      ensure_data "$variant"
-    done
-
-    step "generate Step-1 run scripts (seed $seed)" \
-      "$PYTHON" -m experiments.run_experiments --seeds "$seed"
-
-    for scenario in baseline nocausal nonstationary contaminated; do
-      step "train+eval: $scenario (seed $seed)" \
-        bash "experiments/generated/run_${scenario}.sh"
-    done
-
-    # Aggregate after every completed seed so a partial night still yields a
-    # consistent table with error bars over however many seeds finished.
-    step "aggregate after seed $seed" "$PYTHON" -m experiments.aggregate
-    log ">>> STAGE $stage done - seed $seed complete"
-    stage=$((stage + 1))
+if [ "$ONLY" != "toys" ]; then
+  for variant in baseline nocausal nonstationary contaminated; do
+    ensure_data "$variant"
   done
+
+  # One complete seed at a time, aggregating after each, so a night that ends
+  # early still leaves a consistent table.
+  for seed in $STEP1_SEEDS; do
+    log ""
+    log ">>> STAGE 3/4: $UNDERPOWERED, seed $seed"
+    run_block "seed $seed" "$UNDERPOWERED" "$seed"
+    step "aggregate after seed $seed" \
+      "$PYTHON" -m experiments.aggregate --no-localization
+    log ">>> seed $seed complete"
+  done
+
+  # ------------------------------------------------------------------------
+  # Stage 4 - backfill the missing nocausal cells. Last on purpose: lowest
+  # value, and --skip-existing means only the gaps are actually trained.
+  # ------------------------------------------------------------------------
+  log ""
+  log ">>> STAGE 4/4: backfill missing nocausal cells"
+  run_block "backfill" "nocausal" "$(seq -s' ' 0 20) 42"
+  step "aggregate after stage 4" "$PYTHON" -m experiments.aggregate --no-localization
+  log ">>> STAGE 4 done"
 fi
 
 log ""
