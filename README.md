@@ -68,8 +68,31 @@ srun --gres=gpu:1 bash experiments/run_pipeline.sh
 | Output | Path |
 |--------|------|
 | Metrics table (AUROC / AUPRC / F1 per scenario × anomaly) | `results/summary.csv` |
-| Comparison bar charts | `results/comparison_auroc.png`, `_auprc.png`, `_f1.png` |
+| Same, averaged over seeds with std | `results/summary_by_seed.csv` |
+| Comparison bar charts (error bars once >1 seed) | `results/comparison_auroc.png`, `_auprc.png`, `_f1.png` |
+| Step 2 localization metrics | `results/localization_metrics.csv` |
+| Step 2 causal-propagation sweep | `results/localization_alpha_sweep.csv` |
 | Step 2 localization figures | `results/localization/<scenario>/seed<seed>/` |
+
+### 4. Longer run: controls and extra seeds
+
+`run_pipeline.sh` covers one seed of the Step-1 grid. To also get the Step 2
+controls and error bars, use the overnight driver — it does the cheap,
+high-value work first and aggregates after every stage, so an interrupted run
+still leaves a consistent set of results:
+
+```bash
+bash experiments/run_overnight.sh          # toys, then seeds 3 and 4
+SKIP_SEEDS=1 bash experiments/run_overnight.sh   # only the toy controls (minutes)
+```
+
+Progress, per-step timings and failures are logged to
+`results/overnight_log.txt`. Before spending GPU time, you can verify the whole
+offline analysis path locally:
+
+```bash
+python -m experiments.test_localization
+```
 
 ---
 
@@ -116,13 +139,19 @@ Override `VISIBLE_DEVICES` (or set `CUDA_VISIBLE_DEVICES`) to choose the GPU.
 
 ```
 experiments/
-  datagen.py          # generate baseline + 3 flawed VAR variants
-  scenarios.py        # single source of truth for the experiment grid
-  run_experiments.py  # generate (and optionally --execute) the run scripts
-  run_pipeline.sh     # one-shot: datagen -> run all -> aggregate
-  aggregate.py        # parse results -> summary.csv + comparison plots
-  localization.py     # Step 2: per-variable attribution + figures (offline, CPU)
-  colab_carots.ipynb  # alternative: run on Google Colab instead of a cluster
+  datagen.py               # generate baseline + 3 flawed VAR variants + toys
+  scenarios.py             # single source of truth for the experiment grid
+  run_experiments.py       # generate (and optionally --execute) the run scripts
+  run_pipeline.sh          # one-shot: datagen -> run all -> aggregate
+  run_overnight.sh         # toy controls first, then extra seeds, resumable
+  aggregate.py             # parse results -> CSVs + comparison plots + Step 2
+  localization.py          # Step 2: attribution, metrics, figures (offline, CPU)
+  test_localization.py     # GPU-free smoke test of the offline analysis
+  colab_carots.ipynb       # alternative: run on Google Colab instead of a cluster
+
+  TOY_CHAIN.md             # the toy causal-chain data
+  NONSTATIONARY_CHANGES.md # strengthening the nonstationary variant
+  LOCALIZATION_METRICS.md  # quantitative Step 2 evaluation + controls
 ```
 
 ---

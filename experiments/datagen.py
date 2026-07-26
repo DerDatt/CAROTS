@@ -23,6 +23,16 @@ three *flawed training data* variants:
                    independent distractor variables. Test anomalies are injected
                    into the *root cause only* (variable 0), so localization has
                    a clear correct answer. See ``experiments/TOY_CHAIN.md``.
+  toy_chain_mid  : identical process, anomalies on the chain's *middle* variable
+                   (1) instead of the root.
+  toy_chain_leaf : identical process, anomalies on the chain's *leaf* variable
+                   (2), which has no causal children.
+
+The two extra toy variants are controls for Step 2: they show that the
+attribution finds whichever variable is actually corrupted rather than always
+answering "variable 0", and they bracket the causal-propagation term (a leaf has
+no child evidence to gather, so propagation can only hurt there). The injection
+target per variant is defined once in ``experiments/scenarios.TOY_SCENARIOS``.
 
 Every variant is written into its own directory using the SAME file layout that
 ``VARSegLoader`` expects, plus one extra file per test set:
@@ -48,10 +58,13 @@ Run examples (from the CAROTS repo root, with the project venv active):
   python -m experiments.datagen --variant nonstationary --out-dir data/VAR_nonstationary --check-adf
   python -m experiments.datagen --variant contaminated  --out-dir data/VAR_contaminated
   python -m experiments.datagen --variant toy_chain     --out-dir data/VAR_toy_chain
+  python -m experiments.datagen --variant toy_chain_mid
+  python -m experiments.datagen --variant toy_chain_leaf
 
   # or generate the four Step-1 variants at once into data/VAR_<variant>/:
   python -m experiments.datagen --variant all --check-adf
-  # (``all`` does NOT include toy_chain; generate that separately)
+  # (``all`` does NOT include the toys; use --variant toys for those)
+  python -m experiments.datagen --variant toys
 
 ---------------------------------------------------------------------------
 CHANGELOG – nonstationary strengthening (A + C), 2026-07
@@ -101,6 +114,12 @@ if _VAR_DIR not in sys.path:
 
 from simu_data import make_var_stationary, simulate_var  # noqa: E402
 from multivariate_generator import MultivariateDataGenerator  # noqa: E402
+
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# Single source of truth for which variable each toy variant corrupts.
+from experiments.scenarios import TOY_SCENARIOS  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -290,10 +309,12 @@ def simulate_toy_chain(
     for k in range(chain_len - 1):
         GC[k, k + 1] = 1
 
-    print(f"  toy_chain: p={p} (chain 0→…→{chain_len - 1}, "
+    # ASCII-only console output: the default Windows code page (cp1252) cannot
+    # encode arrows, which would crash datagen when run outside Colab.
+    print(f"  toy_chain: p={p} (chain 0..{chain_len - 1}, "
           f"{n_distractors} distractors), couple={couple}")
-    print(f"  ground-truth edges (i→j): "
-          + ", ".join(f"{k}→{k + 1}" for k in range(chain_len - 1)))
+    print("  ground-truth edges (i causes j): "
+          + ", ".join(f"{k}->{k + 1}" for k in range(chain_len - 1)))
     return X.T[burn_in:], GC
 
 
@@ -659,10 +680,17 @@ def generate_variant(variant, out_dir, factors, seed,
                      toy_chain_len=DEFAULT_TOY_CHAIN_LEN,
                      toy_distractors=DEFAULT_TOY_DISTRACTORS,
                      toy_couple=DEFAULT_TOY_COUPLE,
-                     toy_root_var=DEFAULT_TOY_ROOT_VAR):
-    """Generate one dataset variant into ``out_dir``."""
+                     toy_root_var=None):
+    """Generate one dataset variant into ``out_dir``.
+
+    For the toy variants, ``toy_root_var`` defaults to the injection target
+    registered in ``experiments.scenarios.TOY_SCENARIOS`` (root / middle / leaf),
+    so the variant name alone determines the correct localization answer.
+    """
     os.makedirs(out_dir, exist_ok=True)
     half = length // 2
+    if toy_root_var is None:
+        toy_root_var = TOY_SCENARIOS.get(variant, DEFAULT_TOY_ROOT_VAR)
     print(f"[{variant}] generating into {out_dir} (seed={seed}) ...")
 
     if variant == "baseline":
@@ -702,7 +730,7 @@ def generate_variant(variant, out_dir, factors, seed,
         train, mask = _contaminate_train(train_clean, contamination_ratio, seed)
         np.save(os.path.join(out_dir, "train_contamination_mask.npy"), mask)
 
-    elif variant == "toy_chain":
+    elif variant in TOY_SCENARIOS:
         # Ignore --p for this variant: width is chain_len + distractors.
         data, GC = simulate_toy_chain(
             T=length, seed=seed,
@@ -729,8 +757,8 @@ def generate_variant(variant, out_dir, factors, seed,
     np.save(os.path.join(out_dir, "GC.npy"), GC)
     print(f"  train shape {train.shape}, test shape {test.shape}")
 
-    if variant == "toy_chain":
-        # Root-cause-only injection + stronger default factors for a clear demo.
+    if variant in TOY_SCENARIOS:
+        # Single-variable injection + stronger default factors for a clear demo.
         toy_factors = factors if factors != [2.0] else list(DEFAULT_TOY_FACTORS)
         _inject_root_cause_and_save(
             test, out_dir, factors=toy_factors, seed=seed, root_var=toy_root_var)
@@ -743,10 +771,12 @@ def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--variant", required=True,
-                        choices=["baseline", "nocausal", "nonstationary",
-                                 "contaminated", "toy_chain", "all"],
+                        choices=(["baseline", "nocausal", "nonstationary",
+                                  "contaminated"] + list(TOY_SCENARIOS)
+                                 + ["all", "toys"]),
                         help="which dataset variant to generate "
-                             "(``all`` = the four Step-1 variants, not toy_chain)")
+                             "(``all`` = the four Step-1 variants; "
+                             "``toys`` = every Step-2 toy variant)")
     parser.add_argument("--out-dir", default=None,
                         help="output directory (default: data/VAR_<variant>)")
     parser.add_argument("--seed", type=int, default=0)
@@ -781,16 +811,21 @@ def _parse_args():
     parser.add_argument("--toy-couple", type=float, default=DEFAULT_TOY_COUPLE,
                         help="toy_chain: linear parent→child coefficient "
                              f"(default {DEFAULT_TOY_COUPLE})")
-    parser.add_argument("--toy-root-var", type=int, default=DEFAULT_TOY_ROOT_VAR,
-                        help="toy_chain: which variable receives test anomalies "
-                             f"(default {DEFAULT_TOY_ROOT_VAR} = chain root)")
+    parser.add_argument("--toy-root-var", type=int, default=None,
+                        help="toy variants: which variable receives test "
+                             "anomalies (default: the target registered for the "
+                             f"variant in TOY_SCENARIOS, e.g. {TOY_SCENARIOS})")
     return parser.parse_args()
 
 
 def main():
     args = _parse_args()
-    variants = (["baseline", "nocausal", "nonstationary", "contaminated"]
-                if args.variant == "all" else [args.variant])
+    if args.variant == "all":
+        variants = ["baseline", "nocausal", "nonstationary", "contaminated"]
+    elif args.variant == "toys":
+        variants = list(TOY_SCENARIOS)
+    else:
+        variants = [args.variant]
     for variant in variants:
         if len(variants) > 1:
             # Generating several variants: treat --out-dir (if given) as a parent

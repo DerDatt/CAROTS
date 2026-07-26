@@ -9,7 +9,8 @@ for two research goals:
 * Step 2 - variable-level anomaly localization (added on the scoring side only,
   without touching training or the loss functions). See ``localization.py``.
   For a minimal demo with a clear linear root-cause chain, see
-  ``datagen.py --variant toy_chain`` and ``TOY_CHAIN.md``.
+  ``datagen.py --variant toys``, ``TOY_CHAIN.md`` (the data) and
+  ``LOCALIZATION_METRICS.md`` (how it is evaluated, and the controls).
 
 The upstream code under ``CAROTS/`` is left untouched except for a few small,
 clearly-marked hooks:

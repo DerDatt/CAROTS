@@ -179,14 +179,53 @@ where $s$ is the (standardized) error and $\hat{A}$ is the row-normalized
 adjacency with self-loops removed. With $\alpha=0$ this recovers the direct
 attribution.
 
-Both attributions, the alignment of per-window errors to per-timestep ground
-truth, the figures (per-variable heatmaps, single-window case studies) and a
-light qualitative *hit@k* summary live in
+**Signed vs. two-sided scoring.** Both attributions can score either the signed
+robust z-score or its magnitude $|z|$. This matters more than it sounds: a
+*collective-global* anomaly replaces a noisy segment with a smooth one, which is
+**easier** to forecast, so the culprit's residual drops far below its own median
+and a signed score ranks the one broken variable as maximally *normal*. This is
+the same blind spot that motivates CAROTS' own use of $\mathcal{A}_\text{CL}$
+alongside $\mathcal{A}_\text{CD}$.
+
+Both attributions, both score modes, the alignment of per-window errors to
+per-timestep ground truth, the figures and the quantitative evaluation live in
 [`CAROTS/experiments/localization.py`](experiments/localization.py). The
 module is CPU-only and consumes the `.npy` artifacts saved during inference, so
 localization can be iterated on locally without a GPU.
 
-### 4.3 How the artifacts are produced
+### 4.3 How localization is evaluated
+
+Everything is measured on the *anomalous windows only* — the question is "given
+that this window is anomalous, which variable is to blame?" — and every metric
+is reported next to its chance level:
+
+| Metric | Meaning | Chance level |
+|--------|---------|--------------|
+| `var_auroc` | (window, variable) pairs pooled into one binary ranking problem | 0.5 |
+| `var_ap` | average precision on the same pooling | anomalous-variable base rate |
+| `mrr` | mean reciprocal rank of the first true culprit | `random_mrr` |
+| `hit@k` | top-k contains a culprit | exact hypergeometric `random_hit@k` |
+
+Two diagnostics accompany them. The **alpha sweep** evaluates
+$\alpha \in \{0, 0.25, 0.5, 1, 2\}$, and since $\alpha=0$ *is* the direct
+attribution it isolates exactly what the propagation contributes. The **leakage
+report** compares the mean score of the culprits, of their causal children, and
+of all remaining variables; the propagation can only help if the children sit
+clearly above the rest. Details in
+[`experiments/LOCALIZATION_METRICS.md`](experiments/LOCALIZATION_METRICS.md).
+
+### 4.4 Controls: where do the anomalies sit?
+
+Three toy variants share one generative process and differ only in which
+variable receives the test anomalies (registered in `scenarios.TOY_SCENARIOS`):
+
+| Scenario | Target | Controls for |
+|----------|--------|--------------|
+| `toy_chain` | 0 (root) | the original demo |
+| `toy_chain_mid` | 1 (middle) | "does the attribution just always answer 0?"; propagation should pull credit back from the child |
+| `toy_chain_leaf` | 2 (leaf) | a leaf has no children, so propagation has no evidence to gather — its cost becomes visible |
+
+### 4.5 How the artifacts are produced
 
 During inference, setting `TEST.SAVE_PER_VARIABLE=True` makes the `Predictor`
 save `per_variable_cd_error.npy` (windows × N) and `causality_matrix.npy` (the
@@ -216,14 +255,19 @@ The new analysis package:
 
 ```
 CAROTS/experiments/
-  __init__.py          # overview of the additions
-  datagen.py           # generate baseline + 3 flawed VAR variants
-  scenarios.py         # single source of truth for the experiment grid
-  run_experiments.py   # generate (and optionally run) the run scripts
-  aggregate.py         # parse results -> CSV + comparison plots + localization
-  localization.py      # Step 2: per-variable attribution + figures (offline)
-  run_pipeline.sh      # one-shot driver: datagen -> run all -> aggregate
-  colab_carots.ipynb   # end-to-end GPU notebook (Colab alternative)
+  __init__.py               # overview of the additions
+  datagen.py                # generate baseline + 3 flawed VAR variants + toys
+  scenarios.py              # single source of truth for the experiment grid
+  run_experiments.py        # generate (and optionally run) the run scripts
+  aggregate.py              # parse results -> CSVs + comparison plots + Step 2
+  localization.py           # Step 2: attribution, metrics, figures (offline)
+  test_localization.py      # GPU-free smoke test of the whole offline path
+  run_pipeline.sh           # one-shot driver: datagen -> run all -> aggregate
+  run_overnight.sh          # toy controls first, then extra seeds
+  colab_carots.ipynb        # end-to-end GPU notebook (Colab alternative)
+  TOY_CHAIN.md              # the toy generative model
+  NONSTATIONARY_CHANGES.md  # strengthening the nonstationary variant
+  LOCALIZATION_METRICS.md   # quantitative Step 2 evaluation + controls
 ```
 
 ---
@@ -308,38 +352,130 @@ the Step 2 figures under `results/localization/<scenario>/seed<seed>/`.
 
 ## 7. Results
 
-> The numbers below are filled in after the Colab run. The harness produces them
-> automatically into `results/summary.csv` and the comparison plots.
-
 ### 7.1 Step 1 - detection robustness
 
-Mean AUROC / AUPRC / F1 per (scenario × anomaly type), averaged over seeds:
+Mean AUROC ± std over seeds (`results/summary_by_seed.csv`; seed counts in
+brackets — `baseline`/`nocausal` have 22, the others 5):
 
 | Scenario | PG | PC | CT | CG |
 |----------|----|----|----|----|
-| baseline | _ | _ | _ | _ |
-| nocausal | _ | _ | _ | _ |
-| nonstationary | _ | _ | _ | _ |
-| contaminated | _ | _ | _ | _ |
+| baseline | 0.664 ± 0.036 | 0.649 ± 0.027 | 0.963 ± 0.003 | 0.997 ± 0.001 |
+| nocausal | **0.747 ± 0.039** | 0.601 ± 0.018 | 0.965 ± 0.011 | 0.999 ± 0.001 |
+| contaminated | 0.586 ± 0.029 | 0.580 ± 0.025 | 0.958 ± 0.002 | 0.996 ± 0.000 |
+| nonstationary | 0.570 ± 0.013 | 0.544 ± 0.008 | 0.942 ± 0.003 | 0.949 ± 0.023 |
 
-Comparison chart: `results/comparison_auroc.png`.
+With 22 seeds the standard error on `baseline` is about 0.008, so every gap in
+the table above is many standard errors wide; none of this is seed noise.
 
-### 7.2 Step 2 - localization (qualitative)
+**`nonstationary` is uniformly the worst scenario**, and it is the only one that
+also degrades the collective anomalies (CT 0.963 → 0.942, CG 0.997 → 0.949).
+This resolves the earlier "Finding 2" — before the A+C strengthening documented
+in [`NONSTATIONARY_CHANGES.md`](experiments/NONSTATIONARY_CHANGES.md) the
+variant was marginally indistinguishable from `baseline`; making the marginal
+dynamics switch per regime, not just the graph, is what made the violation bite.
 
-For each run we produce, per anomaly type:
+**`contaminated` degrades the point anomalies** (PG 0.664 → 0.586, PC 0.649 →
+0.580) while leaving the collective ones untouched. Since its test set is
+identical to `baseline`, this isolates the effect of training contamination.
 
-- `*_direct_heatmap.png` / `*_causal_heatmap.png` - per-variable score over test
-  windows next to the ground-truth anomalous-variable mask.
-- `*_direct_window<k>.png` / `*_causal_window<k>.png` - a single-window case
-  study; truly anomalous variables are highlighted in red.
+**`nocausal` is the counter-intuitive one:** PC drops as expected (0.649 →
+0.601), but PG *improves* strongly (0.664 → 0.747, AUPRC 0.082 → 0.329). This is
+not noise. It is also not a fair head-to-head: `nocausal` is a different process,
+in which an isolated spike on an independent AR series is simply a more visible
+event than the same spike inside a coupled VAR. The honest reading is that
+removing causal structure makes the *task* easier for point-global anomalies,
+not that CAROTS benefits from having no causality to exploit.
 
-A light *hit@k* sanity summary (fraction of anomalous windows whose top-k scored
-variables include a truly anomalous one) is printed during aggregation. This is
-a qualitative signal, not a benchmark metric.
+Comparison charts (now with std error bars): `results/comparison_auroc.png`,
+`_auprc.png`, `_f1.png`.
+
+> **Caveat on F1.** `threshold.py` selects the threshold by maximizing F1 *on the
+> test set* (`TEST.THRESHOLD.TYPE = 'best_f1'`), and `TEST.POINT_ADJUST` is on by
+> default. Both are upstream choices we kept for comparability, but the F1
+> columns are therefore oracle numbers and should not be read as deployable
+> performance. AUROC and AUPRC are threshold-free and unaffected.
+
+### 7.2 Step 2 - localization
+
+Quantitative results land in `results/localization_metrics.csv` (one row per run
+x attribution x score mode) and `results/localization_alpha_sweep.csv`. Always
+read them against the printed chance levels.
+
+Direct attribution, signed score, seed 2. The regenerated datasets were verified
+against each run's saved `test_labels.npy`, so the ground truth provably matches
+what the model saw.
+
+**`toy_chain`** (p=5, one culprit per window, chance hit@1 = 0.20):
+
+| Anomaly | `auroc_within` | `mrr` | `hit@1` |
+|---------|---------------|-------|---------|
+| CT | 1.000 | 1.000 | 1.000 |
+| PG | 0.994 | 0.988 | 0.975 |
+| PC | 0.976 | 0.960 | 0.925 |
+| CG | 0.975 | 0.968 | 0.950 |
+
+**`baseline`** (p=128, 10 culprits per window, chance hit@1 = 0.078, chance
+hit@5 = 0.339); stable to ±0.001 across seeds 2/3/4:
+
+| Anomaly | `auroc_within` | `var_ap` | `hit@1` | `hit@5` |
+|---------|---------------|----------|---------|---------|
+| CT | 1.000 | 1.000 | 1.000 | 1.000 |
+| CG | 0.961 | 0.955 | 0.950 | 0.950 |
+| PC | 0.888 | 0.342 | 0.405 | 0.930 |
+| PG | 0.948 | 0.420 | **0.000** | 0.370 |
+
+**The point-global paradox.** PG combines a within-window AUROC of 0.948 with a
+hit@1 of *exactly* zero. Both are correct: the 10 culprits cluster around scores
+of 5-6 while a handful of the 118 normal variables reach 6-15. Typical noise
+sits well below the signal, which is what the AUROC measures, but the **maximum**
+of 118 heavy-tailed noise variables reliably beats a moderate signal. This is
+the multiple-comparisons problem in localization form, and its practical
+consequence is that top-1 is the wrong way to consume this attribution at high
+dimensionality: produce a top-k shortlist and judge it against chance.
+
+**Localization survives flawed training data far better than detection does.**
+Repeating the same evaluation for every Step-1 scenario (direct, signed, seed 2)
+gives within-window AUROC:
+
+| Scenario | CG | CT | PC | PG |
+|----------|----|----|----|----|
+| baseline | 0.961 | 1.000 | 0.888 | 0.948 |
+| nocausal | 0.998 | 1.000 | 0.828 | 0.963 |
+| nonstationary | 0.962 | 1.000 | 0.885 | 0.919 |
+| contaminated | 0.938 | 1.000 | 0.887 | 0.949 |
+
+Where detection loses up to 0.09 AUROC under `nonstationary` (§7.1), the
+attribution barely moves. The two are asking different questions: detection has
+to decide whether a window's *total* score exceeds what training led it to
+expect, which is precisely what a shifted or contaminated training set corrupts,
+whereas attribution only has to rank variables *against each other within one
+window*, and a miscalibrated overall error level largely cancels out.
+
+The `nocausal` column repeats the Step-1 story: PG localization jumps to
+hit@5 = 1.000 versus 0.370 for `baseline`, because an isolated spike on an
+independent AR series has no coupled neighbours competing with it.
+
+**Causal propagation** ($\alpha > 0$) changes results only marginally. On the
+toy chain it helps consistently but slightly (PG mrr 0.988 → 0.993, PC hit@1
+0.925 → 0.935); at p=128 it is neutral to very slightly negative. The leakage
+diagnostic explains why: on the toy chain the culprit scores about 16 while its
+causal children reach 0.95 against 0.92 for unrelated variables, so there is
+barely any downstream evidence to gather. The **two-sided score** likewise makes
+almost no difference on these runs, because the injected anomalies raise the
+forecasting error rather than lowering it.
+
+Per run and anomaly type we also produce:
+
+- `*_<attribution>_<mode>_heatmap.png` - per-variable score over test windows
+  next to the ground-truth mask, colour-clipped at the 99th percentile.
+- `*_<attribution>_<mode>_window<k>.png` - a single-window case study; truly
+  anomalous variables are highlighted in red.
+- `*_alpha_sweep.png` - localization quality vs. the propagation weight, one
+  panel per score mode, with chance levels.
 
 ---
 
-## 8. Hypotheses and expected findings
+## 8. Hypotheses vs. outcomes
 
 - **`nocausal`** - the causal-discrepancy term loses its discriminative power
   (no parents to forecast from), so detection should rely mostly on the
@@ -355,7 +491,22 @@ a qualitative signal, not a benchmark metric.
   should help when anomalies sit on upstream variables whose children also
   light up, by concentrating evidence on the source.
 
-These are pre-registered expectations; the Colab run confirms or refutes them.
+These were pre-registered expectations. Against the results in §7:
+
+- **`nonstationary` - confirmed**, and it is the strongest effect: the only
+  scenario that degrades all four anomaly types, including the collective ones
+  that everything else handles nearly perfectly.
+- **`contaminated` - confirmed** for point anomalies; the collective anomalies
+  are unaffected, which the hypothesis did not anticipate.
+- **`nocausal` - refuted for point-global.** We expected degradation; PG instead
+  improves substantially (0.664 → 0.747 AUROC, 0.082 → 0.329 AUPRC). Only PC
+  behaves as predicted. See §7.1 for why the two scenarios are not a fair
+  head-to-head.
+- **Localization - partly confirmed.** The direct attribution does rank
+  culprits highly, decisively so for collective anomalies. But the causal
+  propagation contributes almost nothing, and the leakage diagnostic shows why:
+  the causal children of a culprit barely rise above unrelated variables, so
+  there is no downstream evidence to redirect upstream.
 
 ---
 
@@ -364,15 +515,19 @@ These are pre-registered expectations; the Colab run confirms or refutes them.
 - **Synthetic only.** VAR data isolates causal effects cleanly but is simpler
   than real telemetry. A natural extension is to repeat the study on a real
   benchmark with partial causal annotations.
-- **Localization is qualitative.** We deliberately keep Step 2 visual. A
-  quantitative localization benchmark (e.g. variable-level AUROC against
-  `*_varlabels.npy`, or root-cause hit@k across graph depths) is a clear next
-  step and the artifacts already support it.
+- **Localization is evaluated on toy graphs.** Step 2 now reports variable-level
+  AUROC/AP/MRR/hit@k against `*_varlabels.npy` with chance levels, but the chain
+  used for the controls has three nodes. How the attribution behaves on a dense
+  128-variable graph, where a corrupted variable has many children and the
+  learned graph is itself uncertain, is only covered by the Step-1 runs.
 - **Single union graph for non-stationary data.** Detecting *which* regime is
   active and switching graphs online is an interesting follow-up that would
   directly address assumption A2.
 - **Propagation depth.** The causal attribution currently uses one-hop child
   evidence; multi-hop diffusion along the graph is a straightforward extension.
+- **Score mode is chosen, not learned.** Signed scoring wins for anomalies that
+  make a variable harder to forecast, two-sided scoring for those that make it
+  easier. Both are reported side by side rather than selected automatically.
 
 ---
 

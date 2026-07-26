@@ -13,10 +13,21 @@ Scenarios (Step 1)
 - ``nonstationary`` : the causal relationships drift over time (regime switches).
 - ``contaminated``  : the *training* data already contains anomalies.
 
-Step 2 helper scenario
-----------------------
-- ``toy_chain``     : small linear causal chain for localization demos
-  (not included in the default Step-1 grid). See ``experiments/TOY_CHAIN.md``.
+Step 2 helper scenarios
+-----------------------
+- ``toy_chain``      : small linear causal chain ``0 -> 1 -> 2`` plus distractors,
+  with test anomalies on the chain **root** (variable 0).
+- ``toy_chain_mid``  : same process, anomalies on the **middle** of the chain
+  (variable 1). Control for "does the attribution just always answer 0?" and the
+  case where causal propagation should pull credit back from the child.
+- ``toy_chain_leaf`` : same process, anomalies on the chain **leaf** (variable 2).
+  The leaf has no children, so propagation has no evidence to gather; if the
+  propagated score is worse than the direct one here, that is the cost of the
+  propagation term.
+
+None of these are part of the default Step-1 grid. See
+``experiments/TOY_CHAIN.md`` for the generative model and
+``experiments/LOCALIZATION_METRICS.md`` for how they are evaluated.
 
 Each scenario reads its data from ``data/VAR_<scenario>/`` (produced by
 ``experiments/datagen.py``) via the ``DATA.VAR_DIR`` config hook, and writes its
@@ -34,13 +45,23 @@ from typing import List, Optional
 # Step-1 flawed-data scenarios (default for ``iter_runs`` / ``run_all``).
 STEP1_SCENARIOS = ("baseline", "nocausal", "nonstationary", "contaminated")
 
-# All known scenario → data-folder mappings (includes the Step-2 toy).
+# Step-2 toy scenarios: same generative process, different injection target.
+# The value is the variable that receives the test anomalies, i.e. the single
+# correct localization answer. Consumed by experiments/datagen.py via
+# ``--toy-root-var`` (see generate_toy_scenarios in run_pipeline.sh).
+TOY_SCENARIOS = {
+    "toy_chain": 0,       # chain root
+    "toy_chain_mid": 1,   # middle of the chain
+    "toy_chain_leaf": 2,  # chain leaf (no causal children)
+}
+
+# All known scenario → data-folder mappings (includes the Step-2 toys).
 SCENARIOS = {
     "baseline": "VAR_baseline",
     "nocausal": "VAR_nocausal",
     "nonstationary": "VAR_nonstationary",
     "contaminated": "VAR_contaminated",
-    "toy_chain": "VAR_toy_chain",
+    **{name: f"VAR_{name}" for name in TOY_SCENARIOS},
 }
 
 
@@ -149,13 +170,14 @@ def iter_runs(scenarios: Optional[List[str]] = None,
               base_dir: str = "data/") -> List[RunSpec]:
     """Enumerate every (scenario, anomaly, seed) run in the requested grid.
 
-    Defaults to the four Step-1 scenarios (``toy_chain`` is opt-in via
-    ``scenarios=["toy_chain"]``). When only ``toy_chain`` is requested and no
+    Defaults to the four Step-1 scenarios (the toys are opt-in via e.g.
+    ``scenarios=["toy_chain"]``). When only toy scenarios are requested and no
     anomaly list is passed, ``TOY_ANOMALIES`` (factor 3.0) is used.
     """
     scenarios = scenarios or list(STEP1_SCENARIOS)
     if anomalies is None:
-        anomalies = TOY_ANOMALIES if set(scenarios) == {"toy_chain"} else ANOMALIES
+        only_toys = set(scenarios) <= set(TOY_SCENARIOS)
+        anomalies = TOY_ANOMALIES if only_toys else ANOMALIES
     seeds = seeds or DEFAULT_SEEDS
     runs = []
     for scenario in scenarios:
