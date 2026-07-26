@@ -26,6 +26,25 @@
 # Every stage aggregates immediately afterwards and nothing uses `set -e`, so
 # whatever has finished by morning is usable even if the machine dies midway.
 #
+# If it crashes: just run this script again
+# -----------------------------------------
+# Restarting is safe and resumes roughly where it stopped. Three things make
+# that true, and each of them is load-bearing:
+#
+#   * `test.txt` is the *last* file a run writes (the per-variable localization
+#     artifacts are saved before it), so `--skip-existing` treats it as a
+#     reliable "this cell is complete" marker. A half-finished cell has no
+#     test.txt and is simply redone, overwriting its partial output.
+#   * A cached causal discoverer is only reused once its training has finished -
+#     see `_CACHE_MARKER` in models/carots/trainer_carots.py. Without that check
+#     an interrupted discoverer would be silently reused, giving that seed a
+#     weaker causal graph than every other seed.
+#   * The datasets are never regenerated once they exist (`ensure_data`), so
+#     later seeds always see the exact same process as earlier ones.
+#
+# The one thing to avoid is running two copies of this script against the same
+# results/ tree at once; they would fight over the same output folders.
+#
 # Usage (from the CAROTS/ directory):
 #   bash experiments/run_overnight.sh
 #

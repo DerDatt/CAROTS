@@ -92,7 +92,11 @@ missing entirely come first, then seeds for the two Step-1 scenarios that are
 short on them, and the low-value backfill last. Because every run script is
 generated with `--skip-existing`, restarting the driver never retrains a cell
 that already has a `test.txt` — it is safe to just launch it again after a crash,
-and `--keep-going` means one failed cell does not abort the rest.
+and `--keep-going` means one failed cell does not abort the rest. `test.txt` is
+the last file a run writes, so a half-finished cell has none and is simply
+redone. An interrupted causal discoverer is also detected and retrained rather
+than reused, since its checkpoint is saved on every improvement and would
+otherwise load fine while holding an under-trained model.
 
 Progress, per-step timings and failures are logged to
 `results/overnight_log.txt`. Before spending GPU time, you can verify the whole
