@@ -71,3 +71,49 @@ class Scorer():
             self.model.train()
 
         return score
+
+    @torch.no_grad()
+    def get_per_variable_cd_scores(self, x):
+        """Per-variable forecasting error for variable-level anomaly localization.
+
+        This is the building block for Step 2 (variable-level localization). It
+        reuses the *exact same* causal-discoverer forecast that produces the
+        causal-discrepancy (CD) anomaly score in ``get_anomaly_scores`` above,
+        but it stops one step earlier: instead of averaging the squared error
+        over *both* time and variables to obtain a single scalar per window, it
+        averages over time only and keeps the variable axis intact.
+
+        Args:
+            x: A batch of windows with shape ``(B, WIN_SIZE, N)``.
+
+        Returns:
+            A tensor of shape ``(B, N)`` whose entry ``[b, n]`` is the mean
+            squared forecasting error of variable ``n`` in window ``b``. A large
+            value means the causal discoverer could not predict that variable
+            well from its parents, i.e. that variable looks anomalous.
+
+        Notes:
+            This method is inference-only. It does not touch training, the loss
+            functions or the model weights, exactly as required for Step 2.
+        """
+        is_training = copy.deepcopy(self.model.training)
+        self.model.eval()
+
+        # Split each window into the input portion (fed to the causal
+        # discoverer) and the target portion (what it must forecast). This is
+        # identical to the "causal_discoverer" branch of get_anomaly_scores.
+        x, y = x[:, :self.cfg.CUTS_PLUS.INPUT_STEP], x[:, self.cfg.CUTS_PLUS.INPUT_STEP:]
+        Graph = (self.model.causal_discoverer.causality_mtx > 0.5).float()
+        Graph = Graph[None].expand(x.size(0), -1, -1)
+        y_pred = self.model.causal_discoverer(x, Graph)
+        y_pred = y_pred.transpose(1, 2)
+        assert y.shape == y_pred.shape  # (B, T, N)
+
+        # Mean over the time axis only -> one error value per variable.
+        score = F.mse_loss(y_pred, y, reduction='none').mean(dim=1)  # (B, N)
+
+        if is_training:
+            self.model.train()
+
+        return score
+

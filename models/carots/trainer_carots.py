@@ -1,3 +1,4 @@
+import glob
 import os
 
 import torch
@@ -7,15 +8,42 @@ from trainer import Trainer, prepare_inputs
 from models.carots.loss import loss_fn
 from utils.misc import mkdir
 
+# Written next to the cached causal discoverer once its training has run to
+# completion. Without it the cache cannot be trusted: the discoverer checkpoint
+# is saved on *every* validation improvement, so a job killed mid-training
+# leaves a file that loads perfectly well but holds an under-trained model.
+# Reusing it would silently give one seed a weaker causal graph than the others.
+_CACHE_MARKER = "training_complete.txt"
+
 
 class CAROTSTrainer(Trainer):
     def __init__(self, cfg, model):
         super().__init__(cfg, model)
-        self.causal_discoverer_checkpoint_dir = str(mkdir(os.path.join(self.cfg.TRAIN.CHECKPOINT_DIR, self.cfg.CAUSAL_DISCOVERER.lower())))
+        # By default the causal discoverer is cached next to the CAROTS model.
+        # If CAUSAL_DISCOVERER_DIR is set, cache it there instead so runs that
+        # share the same training data can reuse a single trained discoverer.
+        causal_base = self.cfg.CAUSAL_DISCOVERER_DIR or self.cfg.TRAIN.CHECKPOINT_DIR
+        self.causal_discoverer_checkpoint_dir = str(mkdir(os.path.join(causal_base, self.cfg.CAUSAL_DISCOVERER.lower())))
         self.causal_discoverer_result_dir = self.causal_discoverer_checkpoint_dir
         cfg_causal_discoverer = getattr(self.cfg, f'{self.cfg.CAUSAL_DISCOVERER}')
         cfg_causal_discoverer.TRAIN.CHECKPOINT_DIR = self.causal_discoverer_checkpoint_dir
         cfg_causal_discoverer.RESULT_DIR = self.causal_discoverer_result_dir
+
+    def cached_discoverer_is_complete(self):
+        """Is the cached causal discoverer safe to reuse?
+
+        True only when its training is known to have finished. Caches created
+        before the marker existed are grandfathered in: if a run sharing this
+        discoverer already wrote its final ``test.txt``, then the discoverer must
+        have trained to completion back then.
+        """
+        if os.path.exists(os.path.join(self.causal_discoverer_checkpoint_dir,
+                                       _CACHE_MARKER)):
+            return True
+        # <results>/<scenario>/seed<N>/shared_causal/<discoverer>/ -> seed<N>/
+        seed_dir = os.path.dirname(os.path.dirname(
+            self.causal_discoverer_checkpoint_dir))
+        return bool(glob.glob(os.path.join(seed_dir, "*", "test.txt")))
 
     def load_causal_discoverer(self):
         checkpoint_path = os.path.join(self.causal_discoverer_checkpoint_dir, "checkpoint_best.pth")
@@ -35,15 +63,26 @@ class CAROTSTrainer(Trainer):
         self.model.causal_discoverer.load_state_dict(trainer_causal_discoverer.model.state_dict())
         self.model.causal_discoverer.eval()
         self.model.causal_discoverer.cuda()
+        # Only now is the cache trustworthy for a later run to pick up.
+        with open(os.path.join(self.causal_discoverer_checkpoint_dir,
+                               _CACHE_MARKER), "w") as f:
+            f.write(f"{self.cfg.CAUSAL_DISCOVERER} training completed\n")
         print(f"Causal discoverer ({self.cfg.CAUSAL_DISCOVERER}) trained successfully.")
 
     def train(self):
         # Attempt to load the causal discoverer, if it fails, train it
-        try:
-            self.load_causal_discoverer()
-        except Exception as e:
-            print(f"Failed to load causal discoverer: {e}. Training a new one.")
+        if not self.cached_discoverer_is_complete():
+            if os.path.exists(os.path.join(self.causal_discoverer_checkpoint_dir,
+                                           "checkpoint_best.pth")):
+                print("Cached causal discoverer has no completion marker "
+                      "(likely an interrupted run) - retraining it.")
             self.train_causal_discoverer()
+        else:
+            try:
+                self.load_causal_discoverer()
+            except Exception as e:
+                print(f"Failed to load causal discoverer: {e}. Training a new one.")
+                self.train_causal_discoverer()
         
         self.model.positive_augmentor.set_causal_discoverer(self.model.causal_discoverer)
 

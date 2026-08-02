@@ -49,6 +49,12 @@ class Predictor:
         normalized_train_scores_cd = (train_scores_cd - mean_cd) / std_cd
         normalized_test_scores_cd = (test_scores_cd - mean_cd) / std_cd
 
+        # Step 2: optionally save the per-variable forecasting error so the
+        # offline localization tools can attribute each anomaly to a variable.
+        # self.scorer is the causal-discoverer scorer here, so we reuse it.
+        if self.cfg.TEST.SAVE_PER_VARIABLE:
+            self._save_per_variable_localization()
+
         # Combine normalized scores
         self.train_scores = normalized_train_scores_cl + normalized_train_scores_cd
         self.test_scores = normalized_test_scores_cl + normalized_test_scores_cd
@@ -111,6 +117,32 @@ class Predictor:
         labels_all = torch.flatten(torch.concat(labels_all, dim=0))
 
         return labels_all.cpu().numpy()
+
+    @torch.no_grad()
+    def _save_per_variable_localization(self):
+        """Compute and save Step-2 variable-level localization artifacts.
+
+        Iterates over the test set with the causal-discoverer scorer and stores
+        the per-variable forecasting error for every window, together with the
+        binarized causal graph. The offline tools in
+        ``experiments/localization.py`` turn these into per-variable anomaly
+        attributions and figures. This runs only when ``TEST.SAVE_PER_VARIABLE``
+        is enabled and never touches training, the model or the loss.
+        """
+        per_variable = []
+        self.model.eval()
+        for inputs in tqdm(self.test_loader, desc='per-variable CD error'):
+            inputs, _ = prepare_inputs(inputs)
+            per_variable.append(self.scorer.get_per_variable_cd_scores(inputs))
+        per_variable = torch.concat(per_variable, dim=0).cpu().numpy()  # (n_windows, N)
+
+        # Binarized causal graph A, where A[i, j] == 1 means variable i causes j.
+        causality_matrix = (self.model.causal_discoverer.causality_mtx > 0.5).float().cpu().numpy()
+
+        self.save_to_npy(**{
+            "per_variable_cd_error": per_variable,
+            "causality_matrix": causality_matrix,
+        })
     
     @staticmethod
     def point_adjust(pred, gt):
