@@ -111,9 +111,10 @@ Anomalies are injected into the **test** split only (except for the
 - **`nocausal`** - the off-diagonal link budget is set to zero, so `beta` is
   diagonal and `GC = I`. Each variable is an independent AR(3) process. This
   removes the cross-variable causal signal CAROTS is designed to exploit.
-- **`nonstationary`** - the timeline is split into `n_regimes=4` segments, each
-  with its **own** randomly-drawn causal graph and coefficients. We save both a
-  representative union graph (`GC.npy`) and the per-regime graphs
+- **`nonstationary`** - the timeline is split into `n_regimes=8` segments, each
+  with its **own** randomly-drawn causal graph, coefficients, and marginal
+  dynamics (see [`NONSTATIONARY_CHANGES.md`](experiments/NONSTATIONARY_CHANGES.md)).
+  We save both a representative union graph (`GC.npy`) and the per-regime graphs
   (`GC_regimes.npy`). This breaks the time-invariance assumption (A2).
 - **`contaminated`** - the process is the clean baseline, but ~5% of the
   **training** timesteps are corrupted with a mix of point-global and
@@ -357,12 +358,12 @@ the Step 2 figures under `results/localization/<scenario>/seed<seed>/`.
 Mean AUROC ± std over seeds (`results/summary_by_seed.csv`; seed counts in
 brackets — `baseline`/`nocausal` have 22, the others 5):
 
-| Scenario | PG | PC | CT | CG |
-|----------|----|----|----|----|
-| baseline | 0.664 ± 0.036 | 0.649 ± 0.027 | 0.963 ± 0.003 | 0.997 ± 0.001 |
-| nocausal | **0.747 ± 0.039** | 0.601 ± 0.018 | 0.965 ± 0.011 | 0.999 ± 0.001 |
-| contaminated | 0.586 ± 0.029 | 0.580 ± 0.025 | 0.958 ± 0.002 | 0.996 ± 0.000 |
-| nonstationary | 0.570 ± 0.013 | 0.544 ± 0.008 | 0.942 ± 0.003 | 0.949 ± 0.023 |
+| Scenario | Seeds | PG | PC | CT | CG |
+|----------|-------|----|----|----|----|
+| baseline | 22 | 0.664 ± 0.036 | 0.649 ± 0.027 | 0.963 ± 0.003 | 0.997 ± 0.001 |
+| nocausal | 22 | **0.747 ± 0.039** | 0.601 ± 0.018 | 0.965 ± 0.011 | 0.994 ± 0.024 |
+| contaminated | 9 | 0.594 ± 0.030 | 0.573 ± 0.024 | 0.959 ± 0.004 | 0.996 ± 0.002 |
+| nonstationary | 9 | 0.572 ± 0.010 | 0.548 ± 0.009 | 0.944 ± 0.004 | 0.955 ± 0.019 |
 
 With 22 seeds the standard error on `baseline` is about 0.008, so every gap in
 the table above is many standard errors wide; none of this is seed noise.
@@ -455,14 +456,47 @@ The `nocausal` column repeats the Step-1 story: PG localization jumps to
 hit@5 = 1.000 versus 0.370 for `baseline`, because an isolated spike on an
 independent AR series has no coupled neighbours competing with it.
 
-**Causal propagation** ($\alpha > 0$) changes results only marginally. On the
-toy chain it helps consistently but slightly (PG mrr 0.988 → 0.993, PC hit@1
-0.925 → 0.935); at p=128 it is neutral to very slightly negative. The leakage
-diagnostic explains why: on the toy chain the culprit scores about 16 while its
-causal children reach 0.95 against 0.92 for unrelated variables, so there is
-barely any downstream evidence to gather. The **two-sided score** likewise makes
-almost no difference on these runs, because the injected anomalies raise the
-forecasting error rather than lowering it.
+### 7.3 Where the anomaly sits decides everything (the controls)
+
+`toy_chain_mid` and `toy_chain_leaf` move the injected anomaly from the chain
+root (variable 0) to its middle (1) and leaf (2). hit@1, mean over 3 seeds,
+chance level 0.20:
+
+| Anomaly sits on | PG | PC | CT | CG |
+|-----------------|----|----|----|----|
+| root (var 0) | 0.987 | 0.903 | 1.000 | 0.950 |
+| middle (var 1) | 0.852 | 0.753 | 1.000 | 0.937 |
+| leaf (var 2) | 0.755 | 0.703 | 1.000 | 1.000 |
+
+**The "it just always answers variable 0" objection is settled**: every cell is
+far above chance wherever the culprit sits. There is, however, a clear gradient
+for the point anomalies — the further downstream the culprit, the harder it is to
+pin down — while the collective anomalies are saturated everywhere.
+
+**And the causal propagation term is not neutral after all.** The root-only
+experiment had suggested it barely matters; sweeping $\alpha$ across all three
+positions shows why that was misleading (`hit@1`, point-global):
+
+| Position | $\alpha$=0 | 0.25 | 0.5 | 1.0 | 2.0 |
+|----------|-----------|------|-----|-----|-----|
+| root | 0.987 | 0.990 | 0.990 | 0.995 | 0.995 |
+| middle | 0.852 | 0.837 | 0.833 | 0.830 | 0.450 |
+| leaf | 0.755 | 0.755 | 0.745 | 0.392 | **0.002** |
+
+Propagation adds a variable's *children's* error to its own score. A root
+culprit has children carrying corroborating evidence, so the term helps. A leaf
+culprit has none — the term adds nothing to the culprit while inflating its
+ancestors, which have the culprit as a child. At $\alpha=2$ the true variable is
+ranked first in 0.2% of windows, i.e. the propagation reliably points at the
+*parent* of the culprit instead. The mechanism is a genuine limitation of the
+approach and only becomes visible once the anomaly is moved off the root.
+
+Practical consequence: keep $\alpha$ small (≤0.5 loses nothing anywhere and
+gains a little at the root), or treat the propagated score as evidence about the
+*subtree* rather than the single variable.
+
+The **two-sided score** makes almost no difference on these runs, because the
+injected anomalies raise the forecasting error rather than lowering it.
 
 Per run and anomaly type we also produce:
 
@@ -502,11 +536,15 @@ These were pre-registered expectations. Against the results in §7:
   improves substantially (0.664 → 0.747 AUROC, 0.082 → 0.329 AUPRC). Only PC
   behaves as predicted. See §7.1 for why the two scenarios are not a fair
   head-to-head.
-- **Localization - partly confirmed.** The direct attribution does rank
-  culprits highly, decisively so for collective anomalies. But the causal
-  propagation contributes almost nothing, and the leakage diagnostic shows why:
-  the causal children of a culprit barely rise above unrelated variables, so
-  there is no downstream evidence to redirect upstream.
+- **Localization - confirmed.** The direct attribution ranks culprits far above
+  chance regardless of where on the causal chain they sit, decisively so for
+  collective anomalies.
+- **Causal propagation - refuted as stated.** We expected it to help, especially
+  for a culprit whose children carry the evidence. It does help at the root, but
+  for a leaf culprit a large weight actively destroys the answer (hit@1 0.755 →
+  0.002), because the term credits the culprit's ancestors instead. This only
+  became visible through the `toy_chain_mid` / `toy_chain_leaf` controls; the
+  root-only experiment made the term look harmlessly neutral.
 
 ---
 

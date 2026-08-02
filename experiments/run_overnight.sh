@@ -91,14 +91,20 @@ ensure_data() {
 }
 
 # Run a command, time it, record the outcome, and carry on regardless.
+#
+# tqdm redraws its progress bars with carriage returns. On a terminal that
+# rewrites one line, but redirected into a file every redraw is kept, which
+# buried the first night's log under ~105k progress lines - 15x the actual
+# content. We split on \r and drop the progress redraws, keeping everything
+# else. PIPESTATUS[0] is the command's own status; the filter's is irrelevant.
 step() {
   local label="$1"; shift
   local started elapsed status
   started=$(date +%s)
   log ""
   log "--- [$(date '+%F %T')] $label"
-  "$@" >>"$LOG" 2>&1
-  status=$?
+  "$@" 2>&1 | tr '\r' '\n' | grep -avE '^[[:space:]]*[0-9]+%\|' >>"$LOG"
+  status=${PIPESTATUS[0]}
   elapsed=$(( $(date +%s) - started ))
   if [ $status -eq 0 ]; then
     log "    OK   ($((elapsed / 60))m $((elapsed % 60))s)"

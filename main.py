@@ -30,6 +30,7 @@ def main():
         model = trainer.load_best_model()
         predictor = Predictor(cfg, model)
         predictor.predict()
-            
+
+
 if __name__ == '__main__':
     main()

@@ -106,6 +106,30 @@ offline analysis path locally:
 python -m experiments.test_localization
 ```
 
+### 5. Slide-ready figures
+
+The figures `localization.py` writes are diagnostic: one per (scenario, seed,
+anomaly type), which is right for checking a run and wrong for a talk. This
+aggregates them into a handful of figures that each make one point:
+
+On a normal cluster/pipeline run the tree is simply `results/<scenario>/...`.
+If you copied results off a machine into a nested export (e.g.
+`results/results_new/results/`), point `--results-root` / `--toy-root` /
+`--step1-root` at that folder instead.
+
+```bash
+# default layout (after bash experiments/run_overnight.sh or run_pipeline.sh):
+python -m experiments.plot_presentation \
+    --results-root results \
+    --toy-root results \
+    --step1-root results --base-dir data
+```
+
+Figures always land in `results/slides/` (independent of `--results-root`). The
+first three figures need only the aggregated CSVs; the explanatory ones
+additionally read the raw `.npy` artifacts, so pass `--toy-root` /
+`--step1-root` for those.
+
 ---
 
 ## Running it step by step (optional)
@@ -158,6 +182,7 @@ experiments/
   run_overnight.sh         # unattended driver: priority-ordered, resumable
   aggregate.py             # parse results -> CSVs + comparison plots + Step 2
   localization.py          # Step 2: attribution, metrics, figures (offline, CPU)
+  plot_presentation.py     # slide-ready figures aggregated across runs/seeds
   test_localization.py     # GPU-free smoke test of the offline analysis
   colab_carots.ipynb       # alternative: run on Google Colab instead of a cluster
 
